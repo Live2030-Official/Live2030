@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: live2030_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: live2030
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: live2030_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: live2030_backend
+    restart: always
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgresql://postgres:postgrespassword@postgres:5432/live2030?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: live2030_super_secure_jwt_production_secret_key_8899
+      AGORA_APP_ID: 95efa72862664489bcdf5c10451bef33
+      AGORA_APP_CERTIFICATE: 507f24e08cdd417286848f752eb237af
+      MSG91_AUTH_KEY: 569692AFCpLmmmnh6aaa8d3cP1
+      MSG91_OTP_TEMPLATE_ID: 6aaa8a22bba336da0b051d62
+      RSOMPAY_ENV: sandbox
+      RSOMPAY_API_KEY: "71|fPWtzeRpvxXr2HOgyC5mTV8oAJmMrYfppJLFNzlss3D89O78rKMqsyjtwoj1p9sQ5c5604c6"
+      RSOMPAY_WEBHOOK_SECRET: ""
+      RSOMPAY_BASE_URL: https://demo-integration.rsompay.com/api/external/v1
+      RSOMPAY_RETURN_URL: https://demo.live2030.com/payment/return
+      RSOMPAY_NOTIFICATION_URL: https://demo.live2030.com/api/payments/rsompay/webhook
+    ports:
+      - "4000:4000"
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  admin_dashboard:
+    build:
+      context: ./admin_dashboard
+      dockerfile: Dockerfile
+    container_name: live2030_admin
+    restart: always
+    environment:
+      PORT: 3000
+      NEXT_PUBLIC_BACKEND_URL: http://backend:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:

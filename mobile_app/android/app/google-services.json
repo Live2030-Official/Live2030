@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "685237346194",
+    "project_id": "live2030",
+    "storage_bucket": "live2030.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:685237346194:android:7fcfab71962f214f92eb4b",
+        "android_client_info": {
+          "package_name": "com.live2030.live2030"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "685237346194-p94pltet2kb33efhsr6bavpkhgg5mj39.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.live2030.live2030",
+            "certificate_hash": "dd8dfc5f4003466f46ecdf7f5d8e668aa639e3fe"
+          }
+        },
+        {
+          "client_id": "685237346194-a9avr5tbce3m104rp856tlaeomalms0h.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDGnZriGv-DIjfOL3OASyeKvarBpY-Yjv8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "685237346194-a9avr5tbce3m104rp856tlaeomalms0h.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "685237346194-es2qq5mt56umloeonpot11j72hhcvku6.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.live2030.live2030"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

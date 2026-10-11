@@ -1,0 +1,27 @@
+# Private Keys & AWS credentials
+*.pem
+*.key
+aws_config.json
+
+# Node & Next.js
+node_modules/
+.next/
+dist/
+build/
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Flutter & Dart
+.dart_tool/
+.packages
+*.apk
+*.aab
+
+# OS & Temp files
+*.tar.gz
+Thumbs.db
+.DS_Store

@@ -1,0 +1,640 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  USER
+  HOST
+  COIN_RESELLER
+  AGENCY_ADMIN
+  SUPER_ADMIN
+}
+
+enum StaffRole {
+  SUPER_ADMIN
+  ADMIN
+  MODERATOR
+  SUPPORT
+  FINANCE
+  MARKETING
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentProvider {
+  RSOMPAY
+  SIMULATOR
+  MANUAL
+  AGENCY
+}
+
+enum RoomStatus {
+  LIVE
+  ENDED
+  TERMINATED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum TransactionType {
+  COIN_PURCHASE
+  RESELLER_BULK_CREDIT
+  RESELLER_TRANSFER
+  GIFT_TRANSACTION
+  AGENCY_COMMISSION
+  WITHDRAWAL_HOLD
+  WITHDRAWAL_PAYOUT
+  WITHDRAWAL_REFUND
+  ADMIN_ADJUSTMENT
+  GAME_BET
+  GAME_WIN
+}
+
+model User {
+  id              String         @id @default(uuid())
+  username        String         @unique
+  email           String?        @unique
+  phone           String?        @unique
+  passwordHash    String?
+  displayName     String
+  avatarUrl       String?
+  bio             String?
+  gender          String?        @default("unspecified")
+  birthday        String?
+  country         String?        @default("Global")
+  role            Role           @default(USER)
+  level           Int            @default(1)
+  xp              Int            @default(0)
+  vipLevel        Int            @default(0) // 0 = Normal User, 1..8 = VIP 1..8
+  totalRechargedUSD Float        @default(0.0)
+  monthlyRechargedUSD Float      @default(0.0)
+  vipBillingMonth String?
+  customId        String?
+  customNameColor String?
+  vipSettings     Json?
+  isBanned        Boolean        @default(false)
+  warningCount    Int            @default(0)     // Number of moderation warnings issued
+  isVerified      Boolean        @default(false) // Admin-granted verification badge
+  verifiedLabel   String?        // e.g. "Official", "Verified Host", "Agency"
+  isStaff         Boolean        @default(false) // Employee/admin panel account
+  staffRole       StaffRole?     // Role for staff/admin accounts
+  permissions     String[]       @default([])    // Granular admin-panel permission keys
+  twoFactorEnabled Boolean       @default(false) // Admin panel 2FA
+  twoFactorMethod  String?       // EMAIL | PHONE | SMS
+  lastLoginAt     DateTime?
+  deviceId        String?
+  appleId         String?        @unique
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  wallet          Wallet?
+  rooms           LiveRoom[]     @relation("HostRooms")
+  agencyBinding   HostBinding?   @relation("HostAgencyBinding")
+  withdrawals     Withdrawal[]
+  resellerProfile CoinReseller?
+  sentGifts       TransactionLedger[] @relation("SenderTransactions")
+  receivedGifts   TransactionLedger[] @relation("RecipientTransactions")
+  posts           Post[]
+  postLikes       PostLike[]
+  postComments    PostComment[]
+  following       Follow[]            @relation("UserFollowing")
+  followers       Follow[]            @relation("UserFollowers")
+  visitedProfiles ProfileVisitor[]    @relation("VisitorUser")
+  profileVisitors ProfileVisitor[]    @relation("VisitedProfile")
+  sentDirectMessages DirectMessage[]  @relation("SentDirectMessages")
+  receivedDirectMessages DirectMessage[] @relation("ReceivedDirectMessages")
+  paymentOrders   PaymentOrder[]
+
+  @@index([role])
+  @@index([username])
+  @@index([vipLevel])
+}
+
+model Wallet {
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  coins                 Int      @default(0)
+  diamonds              Int      @default(0)
+  totalCoinsPurchased   Int      @default(0)
+  totalDiamondsEarned   Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Agency {
+  id                String         @id @default(uuid())
+  name              String
+  code              String         @unique
+  managerEmail      String         @unique
+  commissionPercent Float          @default(12.0)
+  isActive          Boolean        @default(true)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  bindings          HostBinding[]
+  withdrawals       Withdrawal[]
+  commissions       TransactionLedger[]
+  wallet            AgencyWallet?
+}
+
+model HostBinding {
+  id               String    @id @default(uuid())
+  hostId           String    @unique
+  agencyId         String
+  status           String    @default("APPROVED") // PENDING, APPROVED, REJECTED
+  boundAt          DateTime  @default(now())
+  canTransferAfter DateTime?
+
+  host             User      @relation("HostAgencyBinding", fields: [hostId], references: [id], onDelete: Cascade)
+  agency           Agency    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+
+  @@index([agencyId])
+}
+
+model CoinReseller {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  businessName    String
+  whatsappNumber  String
+  whatsappUrl     String
+  region          String   @default("Global")
+  badgeTitle      String   @default("Authorized Vendor")
+  coinStock       Int      @default(0)
+  isVerified      Boolean  @default(true)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model LiveRoom {
+  id                    String     @id @default(uuid())
+  hostId                String
+  title                 String
+  coverUrl              String?
+  agoraChannelName      String     @unique
+  status                RoomStatus @default(LIVE)
+  currentViewers        Int        @default(0)
+  peakViewers           Int        @default(0)
+  totalDiamondsEarned   Int        @default(0)
+  roomType              String     @default("VIDEO") // "VIDEO" or "VOICE"
+  category              String     @default("ALL")   // Music, Chat, Gaming, Talent, Friends, PK...
+  language              String     @default("Global")
+  country               String     @default("Global")
+  isLocked              Boolean    @default(false)
+  roomPin               String?
+  isTrendingHidden      Boolean    @default(false)
+  moderatorIds          String[]   @default([])      // User IDs granted room-moderator powers
+  startedAt             DateTime   @default(now())
+  endedAt               DateTime?
+
+  host                  User       @relation("HostRooms", fields: [hostId], references: [id], onDelete: Cascade)
+  transactions          TransactionLedger[]
+
+  @@index([status])
+  @@index([hostId])
+}
+
+model Gift {
+  id              String   @id @default(uuid())
+  name            String
+  costCoins       Int
+  diamondsAwarded Int
+  iconUrl         String
+  animationUrl    String?
+  category        String   @default("Standard")
+  minVipLevel     Int      @default(0) // 0 = Available to all, 1..8 = VIP exclusive
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+}
+
+model TransactionLedger {
+  id                    String          @id @default(uuid())
+  type                  TransactionType
+  senderId              String?
+  recipientId           String?
+  agencyId              String?
+  roomId                String?
+  giftId                String?
+  coinsDebited          Int             @default(0)
+  diamondsCredited      Int             @default(0)
+  agencyCommissionUSD   Float           @default(0.0)
+  platformRevenueUSD    Float           @default(0.0)
+  amountUSD             Float           @default(0.0)
+  notes                 String?
+  idempotencyKey        String?         @unique
+  createdAt             DateTime        @default(now())
+
+  sender                User?           @relation("SenderTransactions", fields: [senderId], references: [id])
+  recipient             User?           @relation("RecipientTransactions", fields: [recipientId], references: [id])
+  agency                Agency?         @relation(fields: [agencyId], references: [id])
+  room                  LiveRoom?       @relation(fields: [roomId], references: [id])
+
+  @@index([senderId])
+  @@index([recipientId])
+  @@index([agencyId])
+  @@index([type])
+}
+
+model Withdrawal {
+  id                String           @id @default(uuid())
+  userId            String
+  agencyId          String?
+  amountDiamonds    Int
+  amountUSD         Float
+  paymentMethod     String           // BANK, PAYPAL, USDT
+  accountDetails    String           // JSON string of account info
+  status            WithdrawalStatus @default(PENDING)
+  rejectionReason   String?
+  payoutReference   String?
+  createdAt         DateTime         @default(now())
+  reviewedAt        DateTime?
+
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agency            Agency?          @relation(fields: [agencyId], references: [id])
+
+  @@index([status])
+  @@index([userId])
+}
+
+model AuditLog {
+  id            String   @id @default(uuid())
+  adminId       String
+  action        String
+  targetType    String
+  targetId      String?
+  details       String?
+  ipAddress     String?
+  createdAt     DateTime @default(now())
+
+  @@index([adminId])
+  @@index([action])
+}
+
+model PaymentOrder {
+  id                String          @id @default(uuid())
+  externalId        String          @unique
+  userId            String
+  packageId         String?
+  packageName       String?
+  coins             Int             @default(0)
+  bonusCoins        Int             @default(0)
+  totalCoins        Int             @default(0)
+  amountSAR         Float           @default(0.0)
+  amountUSD         Float           @default(0.0)
+  currency          String          @default("SAR")
+  status            PaymentStatus   @default(PENDING)
+  provider          PaymentProvider @default(RSOMPAY)
+  checkoutUrl       String?
+  providerReference String?
+  webhookPayload    Json?
+  simulatorPaid     Boolean         @default(false)
+  creditedAt        DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model AgencyWallet {
+  id                  String   @id @default(uuid())
+  agencyId            String   @unique
+  coins               Int      @default(0)
+  commissionUSD       Float    @default(0.0)
+  totalCommissionUSD  Float    @default(0.0)
+  passwordHash        String?
+  whatsappNumber      String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  agency              Agency   @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+}
+
+model SystemSetting {
+  key         String   @id
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
+}
+
+model CoinPackage {
+  id          String   @id
+  name        String   @default("Coin Package")
+  coins       Int
+  bonusCoins  Int      @default(0)
+  totalCoins  Int
+  amountUSD   Float    @default(0.0)
+  amountSAR   Float    @default(0.0)
+  badge       String?
+  popular     Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([sortOrder])
+}
+
+model Post {
+  id            String        @id @default(uuid())
+  authorId      String
+  type          String        @default("PHOTO") // PHOTO, VIDEO, REELS
+  caption       String?
+  mediaUrl      String
+  thumbnailUrl  String?
+  likesCount    Int           @default(0)
+  commentsCount Int           @default(0)
+  sharesCount   Int           @default(0)
+  viewsCount    Int           @default(0)
+  visibility    String        @default("ACTIVE") // ACTIVE, HIDDEN, REMOVED
+  moderationReason String?
+  moderatedById String?
+  moderatedAt   DateTime?
+  isPinned      Boolean       @default(false)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  author        User          @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  likes         PostLike[]
+  comments      PostComment[]
+
+  @@index([authorId])
+  @@index([type])
+  @@index([visibility])
+  @@index([createdAt])
+}
+
+model PostLike {
+  id        String   @id @default(uuid())
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([userId])
+}
+
+model PostComment {
+  id        String        @id @default(uuid())
+  postId    String
+  authorId  String
+  parentId  String?
+  content   String
+  createdAt DateTime      @default(now())
+
+  post      Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author    User          @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent    PostComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   PostComment[] @relation("CommentReplies")
+
+  @@index([postId])
+  @@index([parentId])
+}
+
+model Follow {
+  id          String   @id @default(uuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+
+  follower    User     @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+}
+
+model LevelConfig {
+  level               Int      @id // 1 to 8
+  title               String
+  minXp               Int      @default(0)
+  minRechargeUSD      Float    @default(0.0) // $500, $1000, $2000, $3500, $5000, $7500, $10000, $15000
+  badgeColor          String   @default("#64748B")
+  badgeIconUrl        String?
+  badgeTitle          String?
+  frameUrl            String?  // Avatar frame image URL
+  animatedFrameUrl    String?  // Dynamic animated avatar frame
+  isAnimatedFrame     Boolean  @default(false)
+  chatBubbleColor     String?  @default("#1E293B")
+  chatBubbleStyle     String?  @default("standard")
+  nameColor           String?  @default("#FFFFFF")
+  lottieUrl           String?  // Lottie JSON animation URL for VIP entrance & celebration
+  entryEffectUrl      String?
+  entryEffectType     String?  @default("NONE") // NONE, SPECIAL, LEGENDARY, HIGHEST
+  perks               String[]
+  features            Json?    // dynamic feature permissions dictionary
+  isVip               Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model VipConfig {
+  level               Int      @id // 1 to 8
+  title               String   // "VIP 1", "VIP 2", ...
+  minRechargeUSD      Float    // 500, 1000, 2000, 3500, 5000, 7500, 10000, 15000
+  badgeColor          String   @default("#F59E0B")
+  badgeIconUrl        String?
+  badgeTitle          String?
+  frameUrl            String?
+  animatedFrameUrl    String?
+  isAnimatedFrame     Boolean  @default(false)
+  chatBubbleColor     String?  @default("#1E293B")
+  chatBubbleStyle     String?  @default("standard")
+  nameColor           String?  @default("#FFFFFF")
+  entryEffectUrl      String?
+  entryEffectType     String?  @default("SPECIAL")
+  lottieUrl           String?
+  perks               String[]
+  features            Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model ProfileVisitor {
+  id          String   @id @default(uuid())
+  profileId   String
+  visitorId   String
+  visitedAt   DateTime @default(now())
+
+  profile     User     @relation("VisitedProfile", fields: [profileId], references: [id], onDelete: Cascade)
+  visitor     User     @relation("VisitorUser", fields: [visitorId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+  @@index([visitorId])
+  @@index([visitedAt])
+}
+
+model VipAnnouncement {
+  id          String   @id @default(uuid())
+  userId      String
+  vipLevel    Int
+  content     String
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model DirectMessage {
+  id          String   @id @default(uuid())
+  senderId    String
+  receiverId  String
+  content     String
+  imageUrl    String?
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  sender      User     @relation("SentDirectMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver    User     @relation("ReceivedDirectMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@index([senderId, receiverId])
+  @@index([receiverId])
+  @@index([createdAt])
+}
+
+model GameConfig {
+  id               String   @id // SLOTS_777, ROULETTE, DICE, YUMMY
+  name             String
+  description      String   @default("")
+  icon             String   @default("🎮")
+  category         String   @default("CASINO") // CASINO, ARCADE, FOOD
+  themeColor       String   @default("#7C3AED")
+  isEnabled        Boolean  @default(true)
+  minVipLevel      Int      @default(0) // 0 = everyone
+  minUserLevel     Int      @default(1)
+  minBet           Int      @default(10)
+  maxBet           Int      @default(10000)
+  maxMultiplier    Int      @default(50)
+  allowInLive      Boolean  @default(true)
+  allowInVoice     Boolean  @default(true)
+  allowStandalone  Boolean  @default(true)
+  sortOrder        Int      @default(0)
+  rules            Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([isEnabled])
+  @@index([sortOrder])
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  ACTIONED
+  DISMISSED
+}
+
+enum ReportTargetType {
+  USER
+  STREAM
+  POST
+  COMMENT
+  MESSAGE
+}
+
+model Report {
+  id            String          @id @default(uuid())
+  reporterId    String
+  reporterName  String?
+  targetType    ReportTargetType
+  targetId      String
+  linkedUserId  String?
+  category      String?
+  reason        String
+  details       String?
+  evidenceUrl   String?
+  status        ReportStatus    @default(PENDING)
+  actionTaken   String?
+  handledById   String?
+  handledAt     DateTime?
+  createdAt     DateTime        @default(now())
+
+  @@index([status])
+  @@index([targetType])
+  @@index([reporterId])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String   // FOLLOW, LIKE, COMMENT, GIFT, VIP, WITHDRAWAL, SYSTEM, MODERATION, PAYMENT
+  title     String
+  body      String?
+  data      Json?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+model UserBlock {
+  id         String   @id @default(uuid())
+  blockerId  String
+  blockedId  String
+  createdAt  DateTime @default(now())
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@index([blockedId])
+}
+
+model UserWarning {
+  id          String   @id @default(uuid())
+  userId      String
+  adminId     String
+  reason      String
+  details     String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model TwoFactorOtp {
+  id         String   @id @default(uuid())
+  userId     String
+  codeHash   String
+  method     String   @default("EMAIL")
+  purpose    String   @default("ADMIN_LOGIN")
+  consumed   Boolean  @default(false)
+  attempts   Int      @default(0)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+
