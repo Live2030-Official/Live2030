@@ -8,6 +8,7 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './jwt.strategy';
 import { AdminAuthGuard } from './guards/admin-auth.guard';
 import { UserAuthGuard } from './guards/user-auth.guard';
+import { AgencyAuthGuard } from './guards/agency-auth.guard';
 import { resolveJwtSecret } from '../../common/security.config';
 
 @Global()
@@ -29,11 +30,12 @@ import { resolveJwtSecret } from '../../common/security.config';
     AuthService,
     JwtStrategy,
     UserAuthGuard,
+    AgencyAuthGuard,
     {
       provide: APP_GUARD,
       useClass: AdminAuthGuard,
     },
   ],
-  exports: [AuthService, JwtStrategy, PassportModule, JwtModule, UserAuthGuard],
+  exports: [AuthService, JwtStrategy, PassportModule, JwtModule, UserAuthGuard, AgencyAuthGuard],
 })
 export class AuthModule {}

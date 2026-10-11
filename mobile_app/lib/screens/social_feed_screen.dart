@@ -6,6 +6,7 @@ import '../widgets/app_video_player.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import 'create_post_screen.dart';
+import 'reels_viewer_screen.dart';
 import 'user_content_screen.dart';
 import '../localization/app_locale_service.dart';
 import '../localization/translated_text.dart';
@@ -179,6 +180,29 @@ class _SocialFeedScreenState extends State<SocialFeedScreen> with SingleTickerPr
     }
   }
 
+  void _openReelsViewer({int initialIndex = 0}) {
+    if (_videoPosts.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: LiveColors.backgroundSurface,
+          content: Text('No reels available yet'.tr, style: GoogleFonts.plusJakartaSans(color: Colors.white)),
+        ),
+      );
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ReelsViewerScreen(
+          reels: _videoPosts,
+          initialIndex: initialIndex.clamp(0, _videoPosts.length - 1),
+        ),
+      ),
+    ).then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
   void _sharePost(Map<String, dynamic> post) async {
     final currentShares = post['sharesCount'] as int? ?? 0;
     setState(() {
@@ -247,6 +271,11 @@ class _SocialFeedScreenState extends State<SocialFeedScreen> with SingleTickerPr
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.slideshow_rounded, color: Colors.white),
+            tooltip: 'Watch Reels'.tr,
+            onPressed: () => _openReelsViewer(),
+          ),
           // Create Post Button with stylish gradient pill
           GestureDetector(
             onTap: _openCreatePost,
@@ -516,6 +545,7 @@ class _SocialFeedScreenState extends State<SocialFeedScreen> with SingleTickerPr
             onFollow: () => _toggleFollowAuthor(post),
             onComment: () => _showCommentsModal(post),
             onShare: () => _sharePost(post),
+            onOpenReels: () => _openReelsViewer(initialIndex: idx),
           );
         },
       ),
@@ -1392,6 +1422,7 @@ class _VideoPostCard extends StatefulWidget {
   final VoidCallback onFollow;
   final VoidCallback onComment;
   final VoidCallback onShare;
+  final VoidCallback? onOpenReels;
 
   const _VideoPostCard({
     required this.post,
@@ -1399,6 +1430,7 @@ class _VideoPostCard extends StatefulWidget {
     required this.onFollow,
     required this.onComment,
     required this.onShare,
+    this.onOpenReels,
   });
 
   @override
@@ -1513,15 +1545,50 @@ class _VideoPostCardState extends State<_VideoPostCard> {
           // In-App Video Player (Plays inside app with Play/Pause, Seekbar, Mute/Unmute)
           ClipRRect(
             borderRadius: BorderRadius.circular(16),
-            child: SizedBox(
-              height: 420,
-              width: double.infinity,
-              child: AppVideoPlayer(
-                videoUrl: mediaUrl,
-                thumbnailUrl: thumbnailUrl,
-                looping: true,
-                autoPlay: false,
-              ),
+            child: Stack(
+              children: [
+                SizedBox(
+                  height: 420,
+                  width: double.infinity,
+                  child: AppVideoPlayer(
+                    videoUrl: mediaUrl,
+                    thumbnailUrl: thumbnailUrl,
+                    looping: true,
+                    autoPlay: false,
+                  ),
+                ),
+                if (widget.onOpenReels != null)
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    child: GestureDetector(
+                      onTap: widget.onOpenReels,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.fullscreen_rounded, color: Colors.white, size: 16),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Reels'.tr,
+                              style: GoogleFonts.plusJakartaSans(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
 

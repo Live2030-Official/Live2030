@@ -17,6 +17,7 @@ export class WithdrawalsController {
   }
 
   @Get('pending')
+  @RequirePermissions('withdrawals.view')
   async getPendingWithdrawals() {
     return this.withdrawalsService.getPendingWithdrawals();
   }

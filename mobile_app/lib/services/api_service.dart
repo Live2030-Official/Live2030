@@ -230,6 +230,23 @@ class ApiService {
     }
   }
 
+  /// Ends a room and returns the end-of-stream summary (host dashboard) if provided.
+  Future<Map<String, dynamic>?> endRoomWithSummary(String roomId) async {
+    try {
+      final host = AuthService().currentUser?.id;
+      final response = await _dio.post(
+        '/api/rooms/$roomId/end',
+        queryParameters: (host != null && host.isNotEmpty) ? {'hostId': host} : null,
+      );
+      if (response.statusCode == 200 && response.data is Map && response.data['summary'] is Map) {
+        return Map<String, dynamic>.from(response.data['summary']);
+      }
+    } catch (e) {
+      debugPrint('Error ending room with summary: $e');
+    }
+    return null;
+  }
+
   /// Audience viewer leaves a room (decrements the live viewer count)
   Future<void> leaveRoom(String roomId) async {
     try {

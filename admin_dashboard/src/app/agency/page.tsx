@@ -50,6 +50,7 @@ interface AgencyData {
   walletBalanceUSD: number;
   totalHosts: number;
   hostsTotalDiamonds: number;
+  accessToken?: string;
 }
 
 interface TransferRecord {
@@ -182,12 +183,24 @@ export default function AgencyPortalPage() {
     };
   }, [agencySession?.id]);
 
+  const getAgencyToken = (): string | undefined => {
+    try {
+      const saved = sessionStorage.getItem('live2030_agency_session');
+      if (saved) return JSON.parse(saved).accessToken as string | undefined;
+    } catch {
+      // ignore
+    }
+    return undefined;
+  };
+
   const fetchAgencyData = async (agencyId: string) => {
     setIsLoadingData(true);
     try {
+      const token = getAgencyToken();
+      const authHeaders: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
       const [transfersRes, hostsRes, agenciesRes] = await Promise.all([
-        fetch(`${BACKEND_URL}/api/agencies/${agencyId}/coin-transfers`).catch(() => null),
-        fetch(`${BACKEND_URL}/api/agencies/${agencyId}/hosts`).catch(() => null),
+        fetch(`${BACKEND_URL}/api/agencies/${agencyId}/coin-transfers`, { headers: authHeaders }).catch(() => null),
+        fetch(`${BACKEND_URL}/api/agencies/${agencyId}/hosts`, { headers: authHeaders }).catch(() => null),
         fetch(`${BACKEND_URL}/api/agencies`).catch(() => null),
       ]);
 
@@ -201,8 +214,9 @@ export default function AgencyPortalPage() {
         const allAgencies: AgencyData[] = await agenciesRes.json();
         const me = allAgencies.find((a) => a.id === agencyId);
         if (me) {
-          setAgencySession(me);
-          sessionStorage.setItem('live2030_agency_session', JSON.stringify(me));
+          const merged: AgencyData = { ...me, accessToken: getAgencyToken() };
+          setAgencySession(merged);
+          sessionStorage.setItem('live2030_agency_session', JSON.stringify(merged));
         }
       }
     } catch {
@@ -232,8 +246,9 @@ export default function AgencyPortalPage() {
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setAgencySession(data.agency);
-        sessionStorage.setItem('live2030_agency_session', JSON.stringify(data.agency));
+        const session: AgencyData = { ...data.agency, accessToken: data.accessToken };
+        setAgencySession(session);
+        sessionStorage.setItem('live2030_agency_session', JSON.stringify(session));
         setLoginCodeOrEmail('');
         setLoginPassword('');
         showToast(`Welcome back, ${data.agency.name}! 🌟`, 'success');
@@ -281,11 +296,14 @@ export default function AgencyPortalPage() {
     try {
       const res = await fetch(`${BACKEND_URL}/api/agencies/${agencySession.id}/transfer-coins`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(agencySession.accessToken ? { Authorization: `Bearer ${agencySession.accessToken}` } : {}),
+        },
         body: JSON.stringify({
           targetUserIdOrUsername: transferTargetUser.trim(),
           amount,
-          notes: transferNotes.trim() || 'Official agency coin recharge',
+          notes: transferNotes.trim(),
         }),
       });
 

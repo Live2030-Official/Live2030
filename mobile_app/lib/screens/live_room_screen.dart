@@ -60,6 +60,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
   int _viewerCount = 1;
   int? _remoteUid;
   bool _isJoined = false;
+  bool _canModerate = false;
   int _totalDiamonds = 0;
   Map<String, dynamic>? _currentGiftAnimation;
   Map<String, dynamic>? _activeVipEntrance;
@@ -134,6 +135,141 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
   final ScrollController _chatScrollController = ScrollController();
   final List<Map<String, dynamic>> _messages = [];
 
+  void _showUserModerationSheet(String displayName, String userId) {
+    final myId = AuthService().currentUser?.id;
+    if (userId.isEmpty || userId == myId || userId == 'system') return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF160626),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                children: [
+                  const Icon(Icons.shield_outlined, color: LiveColors.accentPink, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      displayName,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            ListTile(
+              leading: const Icon(Icons.logout_rounded, color: Color(0xFFF59E0B)),
+              title: Text('Kick from Room'.tr, style: const TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _socket?.emit('room:kick', {
+                  'roomId': widget.channelName,
+                  'targetUserId': userId,
+                  'targetUserName': displayName,
+                  'requesterId': myId,
+                });
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.block_rounded, color: Color(0xFFEF4444)),
+              title: Text('Ban from Room'.tr, style: const TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _socket?.emit('room:ban', {
+                  'roomId': widget.channelName,
+                  'targetUserId': userId,
+                  'targetUserName': displayName,
+                  'requesterId': myId,
+                });
+              },
+            ),
+            if (widget.isHost) ...[
+              const Divider(color: LiveColors.borderSubtle, height: 1),
+              ListTile(
+                leading: const Icon(Icons.verified_user_rounded, color: Color(0xFF34D399)),
+                title: Text('Make Moderator'.tr, style: const TextStyle(color: Colors.white)),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final ok = await ApiService().addRoomModerator(widget.channelName, userId);
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      backgroundColor: ok ? const Color(0xFF34D399) : const Color(0xFFEF4444),
+                      behavior: SnackBarBehavior.floating,
+                      content: Text(
+                        ok ? '$displayName is now a moderator.'.tr : 'Failed to add moderator.'.tr,
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _loadModeratorStatus() async {
+    if (widget.isHost) return;
+    final mods = await ApiService().getRoomModerators(widget.channelName);
+    final myId = AuthService().currentUser?.id;
+    if (myId == null) return;
+    final isMod = mods.any((m) => (m['userId'] ?? m['id'])?.toString() == myId);
+    if (mounted && isMod) setState(() => _canModerate = true);
+  }
+
+  void _handleRemovedFromRoom({required String title, required String message}) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF111827),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(color: Colors.redAccent, width: 1.4),
+        ),
+        title: Row(
+          children: [
+            const Icon(Icons.gpp_bad_rounded, color: Colors.redAccent, size: 24),
+            const SizedBox(width: 10),
+            Expanded(child: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16))),
+          ],
+        ),
+        content: Text(message, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _closeRoomImmediately();
+            },
+            child: Text('OK'.tr, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   // Floating hearts
   final List<_HeartItem> _floatingHearts = [];
   final math.Random _random = math.Random();
@@ -145,6 +281,8 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
   void initState() {
     super.initState();
     _agoraService = AgoraLiveService();
+    _canModerate = widget.isHost;
+    if (!widget.isHost) _loadModeratorStatus();
     _equalizerController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
@@ -295,7 +433,58 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
         }
       });
 
+      _socket!.on('room:user_kicked', (data) {
+        if (!mounted || data == null) return;
+        final targetId = data['targetUserId']?.toString();
+        final myId = AuthService().currentUser?.id;
+        if (targetId != null && targetId == myId) {
+          _handleRemovedFromRoom(
+            title: 'Removed from Stream'.tr,
+            message: data['message']?.toString() ?? 'You were removed from this stream by the host.'.tr,
+          );
+        }
+      });
+
+      _socket!.on('room:user_banned', (data) {
+        if (!mounted || data == null) return;
+        final targetId = data['targetUserId']?.toString();
+        final myId = AuthService().currentUser?.id;
+        if (targetId != null && targetId == myId) {
+          _handleRemovedFromRoom(
+            title: 'Banned from Stream'.tr,
+            message: data['message']?.toString() ?? 'You were banned from this stream by the host.'.tr,
+          );
+        }
+      });
+
+      _socket!.on('room:kick_failed', (data) {
+        if (mounted && data != null && data['message'] != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: const Color(0xFFEF4444),
+              behavior: SnackBarBehavior.floating,
+              content: Text(data['message'].toString(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+            ),
+          );
+        }
+      });
+
+      _socket!.on('room:ban_failed', (data) {
+        if (mounted && data != null && data['message'] != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: const Color(0xFFEF4444),
+              behavior: SnackBarBehavior.floating,
+              content: Text(data['message'].toString(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+            ),
+          );
+        }
+      });
+
       _socket!.on('reconnect', (_) {
+        debugPrint('🔄 Live Signaling Socket Reconnected: Rejoining room ${widget.channelName}');
+        sendJoin();
+      });
 
       _socket!.on('room:viewer_count', (data) {
         if (mounted && data != null && data['viewerCount'] != null) {
@@ -1594,25 +1783,120 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
 
     if (shouldClose == true) {
       if (!mounted) return true;
+
+      // Host: end the stream and capture the performance summary first.
+      Map<String, dynamic>? summary;
+      if (widget.isHost) {
+        summary = await ApiService().endRoomWithSummary(widget.channelName);
+      }
+
+      if (!mounted) return true;
       setState(() => _canExitScreen = true);
       ScaffoldMessenger.of(context).clearSnackBars();
       try {
         _agoraService.leave();
       } catch (_) {}
       if (widget.isHost) {
-        // Fire-and-forget server endRoom and socket event so UI closes instantly without delay
-        ApiService().endRoom(widget.channelName);
+        // Socket event so all viewers' discovery feed updates instantly.
         try {
-          _socket?.emit('stream:ended', {
-            'roomId': widget.channelName,
-            'hostId': AuthService().currentUser?.id,
-          });
+          _socket?.emit('room:end', {'roomId': widget.channelName});
+          _socket?.emit('room:leave', {'roomId': widget.channelName});
         } catch (_) {}
+
+        if (summary != null && mounted) {
+          await _showStreamSummaryDialog(summary);
+        }
       }
+
       _closeRoomImmediately();
       return true;
     }
+
     return false;
+  }
+
+  Future<void> _showStreamSummaryDialog(Map<String, dynamic> summary) {
+    final durationSeconds = (summary['durationSeconds'] as num?)?.toInt() ?? 0;
+    final hours = durationSeconds ~/ 3600;
+    final minutes = (durationSeconds % 3600) ~/ 60;
+    final seconds = durationSeconds % 60;
+    final durationText = hours > 0
+        ? '${hours}h ${minutes}m'
+        : minutes > 0
+            ? '${minutes}m ${seconds}s'
+            : '${seconds}s';
+
+    final stats = <MapEntry<String, String>>[
+      MapEntry('Duration'.tr, durationText),
+      MapEntry('Peak Viewers'.tr, '${(summary['peakViewers'] as num?)?.toInt() ?? 0}'),
+      MapEntry('Viewers at End'.tr, '${(summary['viewersAtEnd'] as num?)?.toInt() ?? 0}'),
+      MapEntry('Total Diamonds'.tr, '${(summary['totalDiamondsEarned'] as num?)?.toInt() ?? 0} 💎'),
+      MapEntry('Gifts Received'.tr, '${(summary['giftsReceived'] as num?)?.toInt() ?? 0} 🎁'),
+      MapEntry('New Followers'.tr, '${(summary['newFollowers'] as num?)?.toInt() ?? 0} 👥'),
+    ];
+
+    return showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF111827),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(22),
+          side: const BorderSide(color: Color(0xFF6366F1), width: 1.4),
+        ),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                gradient: LiveColors.primaryGradient,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.insights_rounded, color: Colors.white, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Stream Summary'.tr,
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 17),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              summary['title']?.toString() ?? '',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            ...stats.map((e) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(e.key, style: const TextStyle(color: Colors.white60, fontSize: 13)),
+                      Text(e.value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                    ],
+                  ),
+                )),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF6366F1),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            ),
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Done'.tr, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildCircleButton({
@@ -1971,8 +2255,13 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
                   final senderVip = (msg['sender']?['vipLevel'] ?? msg['vipLevel'] ?? 0) as int;
                   final senderCustomId = (msg['sender']?['customId'] ?? msg['customId']) as String?;
                   final imageUrl = msg['imageUrl'] as String?;
+                  final senderId = senderData?['id']?.toString() ?? msg['senderId']?.toString() ?? '';
 
-                  return Padding(
+                  return GestureDetector(
+                    onLongPress: (_canModerate && !isSystem && senderId.isNotEmpty)
+                        ? () => _showUserModerationSheet(sender, senderId)
+                        : null,
+                    child: Padding(
                     padding: const EdgeInsets.symmetric(vertical: 2.5),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -2053,13 +2342,14 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
                               ),
                             ),
                           ],
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
+                         ],
+                       ),
+                     ),
+                   ),
+                   );
+                 },
+               ),
+             ),
 
             // 7. Bottom Two-Row Action Controls Bar
             Positioned(

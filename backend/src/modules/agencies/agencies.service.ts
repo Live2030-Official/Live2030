@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, NotFoundException, UnauthorizedException, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAgencyDto, BindHostDto } from './dto/agency.dto';
@@ -15,6 +16,7 @@ export class AgenciesService implements OnModuleInit {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
     @Inject(forwardRef(() => SignalingGateway))
     private readonly signalingGateway?: SignalingGateway,
     @Inject(forwardRef(() => UsersService))
@@ -351,8 +353,16 @@ export class AgenciesService implements OnModuleInit {
     const walletBalanceUSD = agency.walletBalanceUSD ?? 0;
     const whatsappNumber = agency.whatsappNumber || '+91 98765 43210';
 
+    const accessToken = await this.jwtService.signAsync({
+      sub: agency.id,
+      agencyId: agency.id,
+      code: agency.code,
+      type: 'agency',
+    });
+
     return {
       success: true,
+      accessToken,
       agency: {
         id: agency.id,
         name: agency.name,

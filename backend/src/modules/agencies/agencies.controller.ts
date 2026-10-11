@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Put, Delete, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { AgenciesService } from './agencies.service';
 import { CreateAgencyDto, BindHostDto } from './dto/agency.dto';
 import { RequirePermissions } from '../auth/permissions.decorator';
+import { AgencyAuthGuard } from '../auth/guards/agency-auth.guard';
 
 @Controller('api/agencies')
 export class AgenciesController {
@@ -14,7 +15,7 @@ export class AgenciesController {
   }
 
   @Get(':id/hosts')
-  @RequirePermissions('agencies.view')
+  @UseGuards(AgencyAuthGuard)
   async getAgencyHosts(@Param('id') id: string) {
     return this.agenciesService.getAgencyHosts(id);
   }
@@ -79,6 +80,7 @@ export class AgenciesController {
   }
 
   @Post(':id/transfer-coins')
+  @UseGuards(AgencyAuthGuard)
   async transferCoinsToUser(
     @Param('id') agencyId: string,
     @Body('targetUserIdOrUsername') targetUserIdOrUsername: string,
@@ -94,6 +96,7 @@ export class AgenciesController {
   }
 
   @Get(':id/coin-transfers')
+  @UseGuards(AgencyAuthGuard)
   async getAgencyTransfers(@Param('id') agencyId: string) {
     return this.agenciesService.getAgencyTransfers(agencyId);
   }
