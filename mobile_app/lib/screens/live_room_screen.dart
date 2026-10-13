@@ -345,6 +345,11 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
         token: widget.token,
         isHost: widget.isHost,
       );
+      if (widget.isHost) {
+        try {
+          await _agoraService.setBeautyEffect();
+        } catch (_) {}
+      }
 
       // 3. Immediately catch any remote UID already cached during connection
       if (mounted) {
@@ -1923,6 +1928,30 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
     );
   }
 
+  Widget _buildSlider(String label, double value, Function(double) onChanged) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+            Text('${(value * 100).toInt()}%', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+          ],
+        ),
+        Slider(
+          value: value,
+          onChanged: onChanged,
+          min: 0,
+          max: 1,
+          divisions: 10,
+          activeColor: const Color(0xFFEC4899),
+          inactiveColor: Colors.white24,
+        ),
+      ],
+    );
+  }
+
   @override
   void dispose() {
     _equalizerController.dispose();
@@ -2445,6 +2474,92 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
                                 bgColor: Colors.black.withValues(alpha: 0.6),
                                 onTap: () => _agoraService.switchCamera(),
                                 tooltip: 'Flip Camera'.tr,
+                              ),
+                              const SizedBox(width: 6),
+
+                              // Beauty Filter
+                              _buildCircleButton(
+                                icon: _agoraService.isBeautyEnabled ? Icons.face_retouching_natural : Icons.face_retouching_off,
+                                color: _agoraService.isBeautyEnabled ? const Color(0xFFEC4899) : Colors.white,
+                                bgColor: _agoraService.isBeautyEnabled
+                                    ? const Color(0xFFEC4899).withValues(alpha: 0.25)
+                                    : Colors.black.withValues(alpha: 0.6),
+                                onTap: () {
+                                  showModalBottomSheet(
+                                    context: context,
+                                    backgroundColor: const Color(0xFF160626),
+                                    shape: const RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                                    ),
+                                    builder: (ctx) => StatefulBuilder(
+                                      builder: (ctx, setSheet) => SafeArea(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(20),
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  const Icon(Icons.face_retouching_natural, color: Color(0xFFEC4899)),
+                                                  const SizedBox(width: 8),
+                                                  Text('Beauty Filters & Effects'.tr,
+                                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                                                  const Spacer(),
+                                                  Switch(
+                                                    value: _agoraService.isBeautyEnabled,
+                                                    activeColor: const Color(0xFFEC4899),
+                                                    onChanged: (v) async {
+                                                      await _agoraService.setBeautyEffect(enabled: v);
+                                                      setSheet(() {});
+                                                      setState(() {});
+                                                    },
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 20),
+                                              if (_agoraService.isBeautyEnabled) ...[
+                                                _buildSlider(
+                                                  'Smoothness'.tr,
+                                                  _agoraService.beautySmoothness,
+                                                  (val) async {
+                                                    await _agoraService.setBeautyEffect(smoothness: val);
+                                                    setSheet(() {});
+                                                    setState(() {});
+                                                  },
+                                                ),
+                                                const SizedBox(height: 16),
+                                                _buildSlider(
+                                                  'Whitening'.tr,
+                                                  _agoraService.beautyWhitening,
+                                                  (val) async {
+                                                    await _agoraService.setBeautyEffect(whitening: val);
+                                                    setSheet(() {});
+                                                    setState(() {});
+                                                  },
+                                                ),
+                                                const SizedBox(height: 16),
+                                                _buildSlider(
+                                                  'Redness'.tr,
+                                                  _agoraService.beautyRedness,
+                                                  (val) async {
+                                                    await _agoraService.setBeautyEffect(redness: val);
+                                                    setSheet(() {});
+                                                    setState(() {});
+                                                  },
+                                                ),
+                                              ] else
+                                                Text('Enable beauty effects to smooth and enhance your video'.tr,
+                                                    style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                                              const SizedBox(height: 20),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                                tooltip: 'Beauty Filters'.tr,
                               ),
                               const SizedBox(width: 6),
 

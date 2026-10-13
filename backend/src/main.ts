@@ -19,7 +19,7 @@ async function bootstrap() {
 
   // Enable global CORS for mobile clients and web admin
   app.enableCors({
-    origin: '*',
+    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['http://localhost:3000'],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   });

@@ -14,6 +14,10 @@ class AgoraLiveService {
   final Set<int> _remoteUids = {};
   bool _isMuted = false;
   bool _isVideoMuted = false;
+  bool _beautyEnabled = false;
+  double _beautySmoothness = 0.5;
+  double _beautyWhitening = 0.3;
+  double _beautyRedness = 0.0;
 
   // Stream controllers for UI updates
   final StreamController<int?> _remoteUserJoinedController = StreamController<int?>.broadcast();
@@ -30,6 +34,10 @@ class AgoraLiveService {
   Set<int> get remoteUids => _remoteUids;
   bool get isMuted => _isMuted;
   bool get isVideoMuted => _isVideoMuted;
+  bool get isBeautyEnabled => _beautyEnabled;
+  double get beautySmoothness => _beautySmoothness;
+  double get beautyWhitening => _beautyWhitening;
+  double get beautyRedness => _beautyRedness;
 
   Future<void> initialize() async {
     if (_disposed) return;
@@ -230,6 +238,30 @@ class AgoraLiveService {
     if (_engine != null) {
       _isVideoMuted = !_isVideoMuted;
       await _engine!.muteLocalVideoStream(_isVideoMuted);
+    }
+  }
+
+  Future<void> setBeautyEffect({bool? enabled, double? smoothness, double? whitening, double? redness}) async {
+    if (_engine != null) {
+      if (enabled != null) _beautyEnabled = enabled;
+      if (smoothness != null) _beautySmoothness = smoothness.clamp(0.0, 1.0);
+      if (whitening != null) _beautyWhitening = whitening.clamp(0.0, 1.0);
+      if (redness != null) _beautyRedness = redness.clamp(0.0, 1.0);
+
+      try {
+        await _engine!.setBeautyEffectOptions(
+          enabled: _beautyEnabled,
+          options: BeautyOptions(
+            lighteningContrastLevel: LighteningContrastLevel.lighteningContrastNormal,
+            lighteningLevel: _beautyWhitening,
+            smoothnessLevel: _beautySmoothness,
+            rednessLevel: _beautyRedness,
+            sharpnessLevel: 0.0,
+          ),
+        );
+      } catch (e) {
+        debugPrint('Beauty effect error: $e');
+      }
     }
   }
 

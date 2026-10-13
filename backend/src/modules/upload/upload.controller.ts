@@ -45,7 +45,7 @@ export class UploadController {
         },
         filename: (req, file, cb) => {
           const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-          const ext = extname(file.originalname) || '.jpg';
+          const ext = extname(file.originalname).toLowerCase().replace(/[^a-z0-9.]/g, '') || '.jpg';
           cb(null, `avatar-${uniqueSuffix}${ext}`);
         },
       }),
@@ -102,7 +102,7 @@ export class UploadController {
         },
         filename: (req, file, cb) => {
           const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-          const ext = extname(file.originalname) || '.jpg';
+          const ext = extname(file.originalname).toLowerCase().replace(/[^a-z0-9.]/g, '') || '.jpg';
           cb(null, `post-${uniqueSuffix}${ext}`);
         },
       }),
@@ -182,7 +182,7 @@ export class UploadController {
         },
         filename: (req, file, cb) => {
           const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-          const ext = extname(file.originalname) || (file.mimetype.includes('json') ? '.json' : '.png');
+          const ext = (extname(file.originalname) || (file.mimetype.includes('json') ? '.json' : '.png')).toLowerCase().replace(/[^a-z0-9.]/g, '');
           cb(null, `level-asset-${uniqueSuffix}${ext}`);
         },
       }),

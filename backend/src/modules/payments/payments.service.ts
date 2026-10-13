@@ -167,8 +167,7 @@ export class PaymentsService {
     if (key && key.trim().length > 5) {
       return key.trim();
     }
-    // Default official RsomPay sandbox token
-    return '71|fPWtzeRpvxXr2HOgyC5mTV8oAJmMrYfppJLFNzlss3D89O78rKMqsyjtwoj1p9sQ5c5604c6';
+    throw new Error('RSOMPAY_API_KEY environment variable is required');
   }
 
   /**
