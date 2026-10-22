@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger } from '@nestjs/common';
+import { usdToSarRate } from '../../common/pricing.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UpdateUserStatusDto, AdjustWalletDto, UpdateProfileDto, CreateReportDto, ReportActionDto, SetVerificationDto } from './dto/user.dto';
 import { SignalingGateway } from '../signaling/signaling.gateway';
@@ -56,21 +57,29 @@ export class UsersService {
             }
           : undefined;
 
-        // Compute current moderation status & check auto-expiry
-        let userStatus = existing?.status || (dbUser.isBanned ? 'BANNED' : 'ACTIVE');
-        let suspensionUntil = existing?.suspensionUntil || null;
-        let suspensionReason = existing?.suspensionReason || null;
+        // Compute current moderation status & check auto-expiry (DB is the source of truth).
+        let userStatus = (dbUser as any).status || existing?.status || (dbUser.isBanned ? 'BANNED' : 'ACTIVE');
+        let suspensionUntil = (dbUser as any).suspensionUntil
+          ? new Date((dbUser as any).suspensionUntil).toISOString()
+          : existing?.suspensionUntil || null;
+        let suspensionReason = (dbUser as any).suspensionReason || existing?.suspensionReason || null;
 
         if (dbUser.isBanned) {
           userStatus = 'BANNED';
           suspensionUntil = null;
-        } else if (suspensionUntil) {
-          const expireMs = new Date(suspensionUntil).getTime();
-          if (Date.now() >= expireMs) {
-            // Suspension has elapsed! Auto-restore user to ACTIVE
+        } else if (userStatus.startsWith('SUSPENDED_')) {
+          const expireMs = suspensionUntil ? new Date(suspensionUntil).getTime() : 0;
+          if (!suspensionUntil || Date.now() >= expireMs) {
+            // Suspension has elapsed (or was stored without an expiry): auto-restore to ACTIVE.
             userStatus = 'ACTIVE';
             suspensionUntil = null;
             suspensionReason = null;
+            this.prisma.user
+              .update({
+                where: { id: dbUser.id },
+                data: { status: 'ACTIVE', suspensionUntil: null, suspensionReason: null },
+              })
+              .catch(() => null);
           }
         }
 
@@ -100,7 +109,7 @@ export class UsersService {
           isBanned: dbUser.isBanned || userStatus === 'BANNED',
           isVerified: (dbUser as any).isVerified || false,
           verifiedLabel: (dbUser as any).verifiedLabel || null,
-          violationsCount: existing?.violationsCount || 0,
+          violationsCount: (dbUser as any).violationsCount || 0,
           agency,
           createdAt: dbUser.createdAt.toISOString(),
         });
@@ -150,7 +159,7 @@ export class UsersService {
   /**
    * Get single user profile by ID
    */
-  async getUserById(id: string) {
+  async getUserById(id: string, viewer?: { id?: string; role?: string; isStaff?: boolean }) {
     const existing = UsersService.usersMap.get(id);
 
     try {
@@ -175,39 +184,61 @@ export class UsersService {
             }
           : undefined;
 
-        let userStatus = existing?.status || (dbUser.isBanned ? 'BANNED' : 'ACTIVE');
-        let suspensionUntil = existing?.suspensionUntil || null;
-        let suspensionReason = existing?.suspensionReason || null;
+        let userStatus = (dbUser as any).status || existing?.status || (dbUser.isBanned ? 'BANNED' : 'ACTIVE');
+        let suspensionUntil = (dbUser as any).suspensionUntil
+          ? new Date((dbUser as any).suspensionUntil).toISOString()
+          : existing?.suspensionUntil || null;
+        let suspensionReason = (dbUser as any).suspensionReason || existing?.suspensionReason || null;
 
         if (dbUser.isBanned) {
           userStatus = 'BANNED';
           suspensionUntil = null;
-        } else if (suspensionUntil) {
-          const expireMs = new Date(suspensionUntil).getTime();
-          if (Date.now() >= expireMs) {
+        } else if (userStatus.startsWith('SUSPENDED_')) {
+          const expireMs = suspensionUntil ? new Date(suspensionUntil).getTime() : 0;
+          if (!suspensionUntil || Date.now() >= expireMs) {
             userStatus = 'ACTIVE';
             suspensionUntil = null;
             suspensionReason = null;
+            this.prisma.user
+              .update({
+                where: { id: dbUser.id },
+                data: { status: 'ACTIVE', suspensionUntil: null, suspensionReason: null },
+              })
+              .catch(() => null);
           }
         }
+
+        // Contact details are private: only the owner or staff may read them.
+        const isSelfOrStaff =
+          !viewer?.id ||
+          viewer.id === dbUser.id ||
+          viewer.isStaff === true ||
+          ['SUPER_ADMIN', 'ADMIN', 'AGENCY_ADMIN'].includes(viewer.role || '');
+        const privacy = ((dbUser as any).vipSettings || {}) as any;
+        const hideCountry = privacy.hideCountry === true && ((dbUser as any).vipLevel || 0) >= 3;
+        const hideLocation = privacy.hideLocationInRooms === true && ((dbUser as any).vipLevel || 0) >= 1;
 
         const u = {
           id: dbUser.id,
           username: dbUser.username,
           displayName: dbUser.displayName,
-          email: dbUser.email,
-          phone: dbUser.phone,
+          email: isSelfOrStaff ? dbUser.email : null,
+          phone: isSelfOrStaff ? dbUser.phone : null,
           avatarUrl: dbUser.avatarUrl,
           bio: dbUser.bio,
           gender: dbUser.gender,
           birthday: (dbUser as any).birthday,
-          country: (dbUser as any).country || 'Global',
+          country: !isSelfOrStaff && (hideCountry || hideLocation)
+            ? 'Hidden'
+            : ((dbUser as any).country || 'Global'),
           role: dbUser.role,
           level: dbUser.level || 1,
           vipLevel: (dbUser as any).vipLevel || 0,
           totalRechargedUSD: (dbUser as any).totalRechargedUSD || 0.0,
           customId: (dbUser as any).customId || null,
-          customNameColor: (dbUser as any).customNameColor || null,
+          customNameColor: isSelfOrStaff || ((dbUser as any).vipLevel || 0) >= 2
+            ? ((dbUser as any).customNameColor || null)
+            : null,
           vipSettings: (dbUser as any).vipSettings || {},
           coins: dbUser.wallet?.coins ?? 0,
           diamonds: dbUser.wallet?.diamonds ?? 0,
@@ -217,11 +248,11 @@ export class UsersService {
           isBanned: dbUser.isBanned || userStatus === 'BANNED',
           isVerified: (dbUser as any).isVerified || false,
           verifiedLabel: (dbUser as any).verifiedLabel || null,
-          violationsCount: existing?.violationsCount || 0,
+          violationsCount: (dbUser as any).violationsCount || 0,
           agency,
           createdAt: dbUser.createdAt.toISOString(),
         };
-        UsersService.usersMap.set(u.id, u);
+        UsersService.usersMap.set(u.id, { ...u, email: dbUser.email, phone: dbUser.phone });
         return u;
       }
     } catch {
@@ -280,14 +311,18 @@ export class UsersService {
     UsersService.usersMap.set(id, user);
 
     try {
-      await this.prisma.user.updateMany({
+      await this.prisma.user.update({
         where: { id },
         data: {
           isBanned: dto.status === 'BANNED',
+          status: user.status,
+          suspensionUntil: user.suspensionUntil ? new Date(user.suspensionUntil) : null,
+          suspensionReason: user.suspensionReason ?? null,
+          violationsCount: user.violationsCount ?? 0,
         },
       });
     } catch {
-      // in-memory fallback
+      // DB unavailable: keep the in-memory state so the UI stays consistent
     }
 
     // Broadcast instant real-time moderation action to mobile app and rooms
@@ -715,9 +750,29 @@ export class UsersService {
   async createReport(reporterId: string, dto: CreateReportDto) {
     const reporter = UsersService.usersMap.get(reporterId);
 
-    const linkedUserId =
-      (dto as any).reportedUserId ||
-      (dto.targetType === 'USER' ? dto.targetId : undefined);
+    // Never trust client-supplied placeholders like "me"/"host_streamer".
+    // Resolve the real offending account server-side: explicit valid user id,
+    // the target user for USER reports, or the host of the reported room.
+    const PLACEHOLDERS = new Set(['me', 'host_streamer', 'host', 'anonymous', 'unknown']);
+    const provided = typeof (dto as any).reportedUserId === 'string'
+      ? (dto as any).reportedUserId.trim()
+      : '';
+    let linkedUserId: string | undefined =
+      provided && !PLACEHOLDERS.has(provided.toLowerCase())
+        ? provided
+        : dto.targetType === 'USER'
+          ? dto.targetId
+          : undefined;
+
+    if (!linkedUserId && dto.targetType === 'STREAM' && dto.targetId) {
+      const room = await this.prisma.liveRoom
+        .findFirst({
+          where: { OR: [{ id: dto.targetId }, { agoraChannelName: dto.targetId }] },
+          select: { hostId: true },
+        })
+        .catch(() => null);
+      linkedUserId = room?.hostId || undefined;
+    }
 
     let reportedUserName = 'Live Stream';
     if (linkedUserId) {
@@ -1238,7 +1293,7 @@ export class UsersService {
       // fallback
     }
 
-    const USD_TO_SAR = 3.75;
+    const USD_TO_SAR = usdToSarRate();
     const rechargeSAR = paidOrders.reduce((s, o: any) => s + (o.amountSAR || 0), 0);
     const rechargeUSD = parseFloat((rechargeSAR / USD_TO_SAR).toFixed(2));
     const coinsSold = paidOrders.reduce((s, o: any) => s + (o.totalCoins || 0), 0);

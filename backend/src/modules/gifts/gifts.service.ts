@@ -43,22 +43,11 @@ export class GiftsService implements OnModuleInit {
 
   private async seedDefaultGifts() {
     try {
-      for (const gift of GiftsService.giftsList) {
-        await this.prisma.gift.upsert({
-          where: { id: gift.id },
-          create: gift as any,
-          update: {
-            name: gift.name,
-            costCoins: gift.costCoins,
-            diamondsAwarded: gift.diamondsAwarded,
-            minVipLevel: gift.minVipLevel,
-            category: gift.category,
-            iconUrl: gift.iconUrl,
-            isActive: gift.isActive,
-            sortOrder: gift.sortOrder,
-          },
-        });
-      }
+      // Seed only on a fresh install. Re-creating "missing" defaults would
+      // resurrect gifts an admin deliberately deleted from the dashboard.
+      const existingCount = await this.prisma.gift.count();
+      if (existingCount > 0) return;
+      await this.prisma.gift.createMany({ data: GiftsService.giftsList as any });
     } catch {
       // ignore
     }
@@ -101,12 +90,14 @@ export class GiftsService implements OnModuleInit {
     }
 
     if (!gift) {
-      gift = GiftsService.giftsList.find((g) => g.id === giftId) || {
-        id: giftId || 'g1',
-        name: 'Virtual Gift 🎁',
-        costCoins: 100,
-        diamondsAwarded: 42,
-      };
+      gift = GiftsService.giftsList.find((g) => g.id === giftId) || null;
+    }
+
+    if (!gift) {
+      throw new NotFoundException(`Gift "${giftId}" does not exist.`);
+    }
+    if (gift.isActive === false) {
+      throw new BadRequestException(`Gift "${gift.name}" is not currently available.`);
     }
 
     const totalCostCoins = (gift.costCoins || 10) * quantity;
@@ -116,12 +107,6 @@ export class GiftsService implements OnModuleInit {
       where: { id: senderId },
       include: { wallet: true },
     });
-
-    if (!sender) {
-      sender = await this.prisma.user.findFirst({
-        include: { wallet: true },
-      });
-    }
 
     if (!sender) {
       throw new NotFoundException('Sender user account not found');
@@ -188,31 +173,6 @@ export class GiftsService implements OnModuleInit {
     }
 
     if (!recipient) {
-      // Fallback to any host in database
-      recipient = await this.prisma.user.findFirst({
-        where: { role: 'HOST' },
-        include: {
-          wallet: true,
-          agencyBinding: {
-            include: { agency: true },
-          },
-        },
-      });
-
-      if (!recipient) {
-        recipient = await this.prisma.user.findFirst({
-          where: { id: { not: sender.id } },
-          include: {
-            wallet: true,
-            agencyBinding: {
-              include: { agency: true },
-            },
-          },
-        });
-      }
-    }
-
-    if (!recipient) {
       throw new NotFoundException('No active broadcaster or host recipient found for this gift.');
     }
 
@@ -251,25 +211,35 @@ export class GiftsService implements OnModuleInit {
 
     const platformRevenueUSD = Math.max(0, parseFloat(((amountUSD * platformCutPercent) / 100).toFixed(4)));
 
-    // Calculate Diamonds dynamically from Host Cut % of Gift coin cost
-    const totalDiamonds = Math.max(1, Math.round((totalCostCoins * hostCutPercent) / 100));
+    // Diamonds: honour the gift's configured award when set, otherwise derive from Host Cut %.
+    const configuredDiamonds = Number(gift.diamondsAwarded || 0);
+    const totalDiamonds =
+      configuredDiamonds > 0
+        ? Math.max(1, Math.round(configuredDiamonds * quantity))
+        : Math.max(1, Math.round((totalCostCoins * hostCutPercent) / 100));
 
-    // 5. Execute Atomic Database Transaction
-    const txOps: any[] = [
-      this.prisma.wallet.update({
-        where: { userId: sender.id },
-        data: {
-          coins: { decrement: totalCostCoins },
-        },
-      }),
-      this.prisma.wallet.update({
+    // 5. Execute Atomic Database Transaction (interactive so failures roll back cleanly)
+    const updatedSenderWallet: any = await this.prisma.$transaction(async (tx) => {
+      // Conditional debit prevents concurrent sends from overdrawing the wallet.
+      const debit = await tx.wallet.updateMany({
+        where: { userId: sender.id, coins: { gte: totalCostCoins } },
+        data: { coins: { decrement: totalCostCoins } },
+      });
+      if (debit.count === 0) {
+        throw new BadRequestException(
+          `Insufficient coins! Balance: ${sender.wallet.coins} 🪙, Needed: ${totalCostCoins} 🪙. Please top up coins.`,
+        );
+      }
+
+      const hostWallet = await tx.wallet.update({
         where: { userId: recipient.id },
         data: {
           diamonds: { increment: totalDiamonds },
           totalDiamondsEarned: { increment: totalDiamonds },
         },
-      }),
-      this.prisma.transactionLedger.create({
+      });
+
+      const ledger = await tx.transactionLedger.create({
         data: {
           type: TransactionType.GIFT_TRANSACTION,
           senderId: sender.id,
@@ -284,13 +254,11 @@ export class GiftsService implements OnModuleInit {
           amountUSD,
           notes: `Gift [${gift.name}] x${quantity} from ${sender.displayName} to ${recipient.displayName} (Host Cut: ${hostCutPercent}%, Agency: ${agencyCutPercent}%, Platform: ${platformCutPercent}%)`,
         },
-      }),
-    ];
+      });
 
-    // Credit the agency's payable commission wallet (durable balance)
-    if (agencyId && agencyCommissionUSD > 0) {
-      txOps.push(
-        this.prisma.agencyWallet.upsert({
+      // Credit the agency's payable commission wallet (durable balance)
+      if (agencyId && agencyCommissionUSD > 0) {
+        await tx.agencyWallet.upsert({
           where: { agencyId },
           create: {
             agencyId,
@@ -301,11 +269,13 @@ export class GiftsService implements OnModuleInit {
             commissionUSD: { increment: agencyCommissionUSD },
             totalCommissionUSD: { increment: agencyCommissionUSD },
           },
-        }),
-      );
-    }
+        });
+      }
 
-    const [updatedSenderWallet, updatedHostWallet, ledgerEntry] = await this.prisma.$transaction(txOps);
+      return { wallet: hostWallet, ledger };
+    });
+    const updatedHostWallet = updatedSenderWallet.wallet;
+    const ledgerEntry = updatedSenderWallet.ledger;
 
     // Update LiveRoom total diamonds if room is tracked
     if (room?.id) {
@@ -507,33 +477,33 @@ export class GiftsService implements OnModuleInit {
   /**
    * Update an existing gift (Super Admin)
    */
-  async updateGift(id: string, dto: Partial<CreateGiftDto>) {
+  async updateGift(id: string, dto: Partial<CreateGiftDto> & { isActive?: boolean; sortOrder?: number }) {
+    const existing = await this.prisma.gift.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`Gift #${id} not found.`);
+    }
+
+    const updated = await this.prisma.gift.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name }),
+        ...(dto.costCoins !== undefined && { costCoins: Number(dto.costCoins) }),
+        ...(dto.diamondsAwarded !== undefined && { diamondsAwarded: Number(dto.diamondsAwarded) }),
+        ...(dto.iconUrl !== undefined && { iconUrl: dto.iconUrl }),
+        ...(dto.animationUrl !== undefined && { animationUrl: dto.animationUrl }),
+        ...(dto.category !== undefined && { category: dto.category }),
+        ...(dto.minVipLevel !== undefined && { minVipLevel: Number(dto.minVipLevel) }),
+        ...(dto.isActive !== undefined && { isActive: !!dto.isActive }),
+        ...(dto.sortOrder !== undefined && { sortOrder: Number(dto.sortOrder) }),
+      },
+    });
+
     const index = GiftsService.giftsList.findIndex((g) => g.id === id);
     if (index !== -1) {
-      GiftsService.giftsList[index] = {
-        ...GiftsService.giftsList[index],
-        ...dto,
-        costCoins: dto.costCoins ? Number(dto.costCoins) : GiftsService.giftsList[index].costCoins,
-        diamondsAwarded: dto.diamondsAwarded ? Number(dto.diamondsAwarded) : GiftsService.giftsList[index].diamondsAwarded,
-        minVipLevel: dto.minVipLevel !== undefined ? Number(dto.minVipLevel) : GiftsService.giftsList[index].minVipLevel,
-      };
+      GiftsService.giftsList[index] = { ...GiftsService.giftsList[index], ...dto };
     }
 
-    try {
-      await this.prisma.gift.update({
-        where: { id },
-        data: {
-          ...(dto.name && { name: dto.name }),
-          ...(dto.costCoins && { costCoins: Number(dto.costCoins) }),
-          ...(dto.diamondsAwarded && { diamondsAwarded: Number(dto.diamondsAwarded) }),
-          ...(dto.category && { category: dto.category }),
-        },
-      });
-    } catch {
-      // ignore
-    }
-
-    return index !== -1 ? GiftsService.giftsList[index] : { success: true };
+    return updated;
   }
 
   /**
@@ -542,13 +512,11 @@ export class GiftsService implements OnModuleInit {
   async deleteGift(id: string) {
     GiftsService.giftsList = GiftsService.giftsList.filter((g) => g.id !== id);
 
-    try {
-      await this.prisma.gift.delete({
-        where: { id },
-      });
-    } catch {
-      // ignore
+    const existing = await this.prisma.gift.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`Gift #${id} not found.`);
     }
+    await this.prisma.gift.delete({ where: { id } });
 
     return { success: true, message: `Gift #${id} deleted successfully.` };
   }

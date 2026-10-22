@@ -246,17 +246,28 @@ class LevelService extends ChangeNotifier {
     return getMinXp(level + 1);
   }
 
-  /// Calculate progression fraction [0.0 to 1.0] from current level to next level
-  double getProgress(int currentLevel, int currentXp) {
+  /// Recharge threshold (USD) required for the next VIP tier.
+  int getNextLevelMinRechargeUSD(int level) {
+    if (level >= 8) return getMinRechargeUSD(8);
+    return getMinRechargeUSD(level + 1);
+  }
+
+  /// Calculate progression fraction [0.0 to 1.0] from current level to next level.
+  ///
+  /// VIP progression is driven by monthly recharge (USD), never by XP. XP is a
+  /// separate engagement stat, so mixing the two produced misleading progress.
+  double getProgress(int currentLevel, double monthlyRechargedUSD) {
     if (currentLevel >= 8) return 1.0;
 
-    final currMin = getMinXp(currentLevel);
-    final nextMin = getNextLevelMinXp(currentLevel);
+    final currMin = getMinRechargeUSD(currentLevel).toDouble();
+    final nextMin = getMinRechargeUSD(
+      currentLevel >= 8 ? 8 : currentLevel + 1,
+    ).toDouble();
 
     final span = nextMin - currMin;
     if (span <= 0) return 1.0;
 
-    final progress = (currentXp - currMin) / span;
+    final progress = (monthlyRechargedUSD - currMin) / span;
     return progress.clamp(0.0, 1.0);
   }
 

@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SignalingGateway } from '../signaling/signaling.gateway';
 import { LevelsService } from '../levels/levels.service';
@@ -97,6 +98,30 @@ const GAME_DEFINITIONS: Record<string, any> = {
     ],
   },
 };
+
+/**
+ * Deterministic, auditable RNG for game rounds.
+ *
+ * Every round is seeded with 32 random bytes. Outcomes are derived from
+ * SHA-256(seed) so the exact sequence can be replayed and verified later
+ * against the seed stored in the transaction ledger.
+ */
+class ProvablyFairRng {
+  private counter = 0;
+  private buffer: number[] = [];
+
+  constructor(private readonly seed: string) {}
+
+  next(): number {
+    if (this.buffer.length === 0) {
+      const hash = createHash('sha256').update(`${this.seed}:${this.counter++}`).digest();
+      for (let i = 0; i + 4 <= hash.length; i += 4) {
+        this.buffer.push(hash.readUInt32BE(i) / 0x100000000);
+      }
+    }
+    return this.buffer.shift() as number;
+  }
+}
 
 @Injectable()
 export class GamesService implements OnModuleInit {
@@ -400,14 +425,17 @@ export class GamesService implements OnModuleInit {
 
     // Enforce admin-configured surface availability (live video / voice / standalone).
     let surface: 'LIVE' | 'VOICE' | 'STANDALONE' = 'STANDALONE';
+    let resolvedRoom: { id: string; roomType: string; status: string; agoraChannelName?: string } | null = null;
     if (roomId) {
-      const room = await this.prisma.liveRoom.findUnique({
-        where: { id: roomId },
-        select: { roomType: true, status: true },
+      // The client may pass either the database room id or the Agora channel name.
+      const room = await this.prisma.liveRoom.findFirst({
+        where: { OR: [{ id: roomId }, { agoraChannelName: roomId }] },
+        select: { id: true, roomType: true, status: true, agoraChannelName: true },
       });
       if (!room || room.status !== 'LIVE') {
         throw new BadRequestException('This room is not currently live.');
       }
+      resolvedRoom = room as any;
       surface = room.roomType === 'VOICE' ? 'VOICE' : 'LIVE';
     }
     if (config) {
@@ -434,13 +462,18 @@ export class GamesService implements OnModuleInit {
       ? 'VIP Mystery Player 🕵️'
       : (user.displayName || user.username || 'Player');
 
-    // 4. Compute game outcome
+    // 4. Compute game outcome (provably fair, deterministic from the round seed)
+    const roundSeed = randomBytes(32).toString('hex');
+    const serverSeedHash = createHash('sha256').update(roundSeed).digest('hex');
+    const roundNonce = Date.now();
+    const rng = new ProvablyFairRng(`${roundSeed}:${roundNonce}:${user.id}`);
+
     let multiplier = 0;
     let outcomeDetails: any = {};
 
     if (gameId === 'SLOTS_777') {
       const rollReel = () => {
-        const rand = Math.random();
+        const rand = rng.next();
         if (rand < 0.12) return '7️⃣';
         if (rand < 0.25) return '💎';
         if (rand < 0.40) return '👑';
@@ -473,7 +506,7 @@ export class GamesService implements OnModuleInit {
       };
     } else if (gameId === 'ROULETTE') {
       const segments = def.segments || [0, 2, 0, 5, 0, 10, 0, 20, 0, 2, 0, 50];
-      const selectedIndex = Math.floor(Math.random() * segments.length);
+      const selectedIndex = Math.floor(rng.next() * segments.length);
       multiplier = segments[selectedIndex];
       outcomeDetails = {
         selectedIndex,
@@ -481,9 +514,9 @@ export class GamesService implements OnModuleInit {
         isJackpot: multiplier >= 20,
       };
     } else if (gameId === 'DICE') {
-      const d1 = Math.floor(Math.random() * 6) + 1;
-      const d2 = Math.floor(Math.random() * 6) + 1;
-      const d3 = Math.floor(Math.random() * 6) + 1;
+      const d1 = Math.floor(rng.next() * 6) + 1;
+      const d2 = Math.floor(rng.next() * 6) + 1;
+      const d3 = Math.floor(rng.next() * 6) + 1;
       const sum = d1 + d2 + d3;
       const isTriple = d1 === d2 && d2 === d3;
       const choice = (betChoice || 'BIG').toUpperCase();
@@ -516,7 +549,7 @@ export class GamesService implements OnModuleInit {
         { key: 'DONUT', weight: 7, multiplier: 40 },
       ];
       const total = weighted.reduce((s, w) => s + w.weight, 0);
-      let roll = Math.random() * total;
+      let roll = rng.next() * total;
       let landed = weighted[weighted.length - 1];
       for (const w of weighted) {
         if (roll < w.weight) { landed = w; break; }
@@ -534,6 +567,11 @@ export class GamesService implements OnModuleInit {
         isJackpot: multiplier >= 40,
       };
     }
+
+    outcomeDetails = {
+      ...outcomeDetails,
+      fairness: { serverSeedHash, nonce: roundNonce },
+    };
 
     const winningsCoins = Math.floor(betAmount * multiplier);
     const netChange = winningsCoins - betAmount;
@@ -564,7 +602,7 @@ export class GamesService implements OnModuleInit {
           data: {
             type: 'GAME_BET' as TransactionType,
             senderId: userId,
-            roomId: roomId || null,
+            roomId: resolvedRoom?.id || roomId || null,
             coinsDebited: betAmount,
             notes: `Game Bet: [${gameId}] bet ${betAmount} coins`,
           },
@@ -575,9 +613,9 @@ export class GamesService implements OnModuleInit {
             data: {
               type: 'GAME_WIN' as TransactionType,
               recipientId: userId,
-              roomId: roomId || null,
+              roomId: resolvedRoom?.id || roomId || null,
               coinsDebited: 0,
-              notes: `Game Win: [${gameId}] won ${winningsCoins} coins (${multiplier}x)`,
+              notes: `Game Win: [${gameId}] won ${winningsCoins} coins (${multiplier}x) seed:${roundSeed}`,
             },
           });
         }
@@ -593,8 +631,9 @@ export class GamesService implements OnModuleInit {
     const gameTitle = config?.name || def.name;
 
     // 6. Broadcast to room if played in a room
-    if (roomId) {
-      this.signalingGateway.server?.to(roomId).emit('room:game_result', {
+    if (resolvedRoom) {
+      const broadcastKey = resolvedRoom.agoraChannelName || resolvedRoom.id;
+      this.signalingGateway.server?.to(broadcastKey).emit('room:game_result', {
         gameId,
         gameTitle,
         playerId: effectiveAnonymous ? 'anonymous' : user.id,

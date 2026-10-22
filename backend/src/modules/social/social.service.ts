@@ -48,6 +48,8 @@ export class SocialService {
             username: true,
             displayName: true,
             avatarUrl: true,
+            isVerified: true,
+            verifiedLabel: true,
             level: true,
             role: true,
           },
@@ -87,6 +89,8 @@ export class SocialService {
               username: true,
               displayName: true,
               avatarUrl: true,
+              isVerified: true,
+              verifiedLabel: true,
               level: true,
               role: true,
             },
@@ -231,6 +235,10 @@ export class SocialService {
     if (!post) {
       throw new NotFoundException('Post not found');
     }
+    // Hidden / removed content must not remain publicly reachable (incl. via comments).
+    if ((post as any).visibility && (post as any).visibility !== 'ACTIVE') {
+      throw new NotFoundException('Post not found');
+    }
 
     // Fetch top-level comments (parentId: null) with nested replies
     const comments = await this.prisma.postComment.findMany({
@@ -246,6 +254,8 @@ export class SocialService {
             username: true,
             displayName: true,
             avatarUrl: true,
+            isVerified: true,
+            verifiedLabel: true,
           },
         },
         replies: {
@@ -257,6 +267,8 @@ export class SocialService {
                 username: true,
                 displayName: true,
                 avatarUrl: true,
+                isVerified: true,
+                verifiedLabel: true,
               },
             },
           },
@@ -302,6 +314,8 @@ export class SocialService {
               username: true,
               displayName: true,
               avatarUrl: true,
+              isVerified: true,
+              verifiedLabel: true,
             },
           },
         },
@@ -423,6 +437,8 @@ export class SocialService {
             username: true,
             displayName: true,
             avatarUrl: true,
+            isVerified: true,
+            verifiedLabel: true,
             level: true,
             role: true,
           },
@@ -540,6 +556,8 @@ export class SocialService {
             username: true,
             displayName: true,
             avatarUrl: true,
+            isVerified: true,
+            verifiedLabel: true,
             level: true,
             role: true,
           },
@@ -581,6 +599,8 @@ export class SocialService {
             username: true,
             displayName: true,
             avatarUrl: true,
+            isVerified: true,
+            verifiedLabel: true,
             level: true,
             role: true,
           },
@@ -647,11 +667,11 @@ export class SocialService {
     const [sender, receiver] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: senderId },
-        select: { id: true, displayName: true, username: true, avatarUrl: true, vipLevel: true, customId: true },
+        select: { id: true, displayName: true, username: true, avatarUrl: true, vipLevel: true, customId: true, isVerified: true, verifiedLabel: true },
       }),
       this.prisma.user.findUnique({
         where: { id: receiverId },
-        select: { id: true, displayName: true, username: true, avatarUrl: true, vipSettings: true },
+        select: { id: true, displayName: true, username: true, avatarUrl: true, vipSettings: true, isVerified: true, verifiedLabel: true },
       }),
     ]);
 
@@ -744,10 +764,10 @@ export class SocialService {
       take: 200,
       include: {
         sender: {
-          select: { id: true, displayName: true, username: true, avatarUrl: true, vipLevel: true, customId: true },
+          select: { id: true, displayName: true, username: true, avatarUrl: true, vipLevel: true, customId: true, isVerified: true, verifiedLabel: true },
         },
         receiver: {
-          select: { id: true, displayName: true, username: true, avatarUrl: true, vipLevel: true, customId: true },
+          select: { id: true, displayName: true, username: true, avatarUrl: true, vipLevel: true, customId: true, isVerified: true, verifiedLabel: true },
         },
       },
     });
@@ -846,6 +866,8 @@ export class SocialService {
         displayName: true,
         username: true,
         avatarUrl: true,
+        isVerified: true,
+        verifiedLabel: true,
         level: true,
         vipLevel: true,
         customId: true,

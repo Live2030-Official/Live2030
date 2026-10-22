@@ -1,8 +1,21 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  ForbiddenException,
+  Param,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import { AgenciesService } from './agencies.service';
 import { CreateAgencyDto, BindHostDto } from './dto/agency.dto';
 import { RequirePermissions } from '../auth/permissions.decorator';
 import { AgencyAuthGuard } from '../auth/guards/agency-auth.guard';
+import { UserAuthGuard } from '../auth/guards/user-auth.guard';
+import { Public } from '../auth/permissions.decorator';
 
 @Controller('api/agencies')
 export class AgenciesController {
@@ -20,6 +33,7 @@ export class AgenciesController {
     return this.agenciesService.getAgencyHosts(id);
   }
 
+  @Public()
   @Post('register')
   async registerAgency(@Body() dto: CreateAgencyDto) {
     return this.agenciesService.registerAgency(dto);
@@ -48,10 +62,13 @@ export class AgenciesController {
   }
 
   @Post('bind-host')
-  async bindHost(@Body() dto: BindHostDto) {
-    return this.agenciesService.bindHost(dto);
+  @UseGuards(UserAuthGuard)
+  async bindHost(@Request() req: any, @Body() dto: BindHostDto) {
+    // A host may only bind THEMSELVES to an agency code.
+    return this.agenciesService.bindHost({ ...dto, hostId: dto.hostId || req.user?.id });
   }
 
+  @Public()
   @Post('login')
   async loginAgency(
     @Body('codeOrEmail') codeOrEmail: string,
@@ -102,7 +119,12 @@ export class AgenciesController {
   }
 
   @Get('host-status/:hostId')
-  async getHostAgencyStatus(@Param('hostId') hostId: string) {
+  @UseGuards(UserAuthGuard)
+  async getHostAgencyStatus(@Param('hostId') hostId: string, @Request() req: any) {
+    const isStaff = req.user?.isStaff === true || ['SUPER_ADMIN', 'AGENCY_ADMIN'].includes(req.user?.role);
+    if (!isStaff && hostId !== req.user?.id) {
+      throw new ForbiddenException('You can only view your own agency status.');
+    }
     return this.agenciesService.getHostAgencyStatus(hostId);
   }
 }

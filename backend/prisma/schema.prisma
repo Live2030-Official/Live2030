@@ -85,10 +85,14 @@ model User {
   totalRechargedUSD Float        @default(0.0)
   monthlyRechargedUSD Float      @default(0.0)
   vipBillingMonth String?
-  customId        String?
+  customId        String?       @unique
   customNameColor String?
   vipSettings     Json?
   isBanned        Boolean        @default(false)
+  status          String         @default("ACTIVE") // ACTIVE | SUSPENDED_24H/7D/30D | BANNED | VIOLATION_FLAGGED
+  suspensionUntil DateTime?
+  suspensionReason String?
+  violationsCount Int            @default(0)
   warningCount    Int            @default(0)     // Number of moderation warnings issued
   isVerified      Boolean        @default(false) // Admin-granted verification badge
   verifiedLabel   String?        // e.g. "Official", "Verified Host", "Agency"
@@ -204,6 +208,7 @@ model LiveRoom {
   roomPin               String?
   isTrendingHidden      Boolean    @default(false)
   moderatorIds          String[]   @default([])      // User IDs granted room-moderator powers
+  bannedUserIds         String[]   @default([])      // User IDs banned from this room (persisted)
   startedAt             DateTime   @default(now())
   endedAt               DateTime?
 

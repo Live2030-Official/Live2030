@@ -1,4 +1,5 @@
 import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { usdToSarRate } from '../../common/pricing.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SignalingGateway } from '../signaling/signaling.gateway';
 import { CreateCoinPackageDto, UpdateCoinPackageDto } from './dto/coin-package.dto';
@@ -18,9 +19,6 @@ export interface PublicCoinPackage {
 @Injectable()
 export class CoinPackagesService implements OnModuleInit {
   private readonly logger = new Logger(CoinPackagesService.name);
-
-  // Default USD -> SAR conversion used when a SAR price is not supplied
-  private static readonly USD_TO_SAR = 3.75;
 
   // Curated default coin packages, seeded to the database on first boot.
   private static readonly DEFAULT_PACKAGES: PublicCoinPackage[] = [
@@ -43,15 +41,16 @@ export class CoinPackagesService implements OnModuleInit {
 
   private async seedDefaults() {
     try {
-      const existing = await this.prisma.coinPackage.findMany({ select: { id: true } });
-      const existingIds = new Set(existing.map((e) => e.id));
+      // Seed only on a fresh install. Re-creating "missing" defaults would
+      // resurrect packages an admin deliberately deleted from the dashboard.
+      const existingCount = await this.prisma.coinPackage.count();
+      if (existingCount > 0) return;
+
       for (let i = 0; i < CoinPackagesService.DEFAULT_PACKAGES.length; i++) {
         const pkg = CoinPackagesService.DEFAULT_PACKAGES[i];
-        if (!existingIds.has(pkg.id)) {
-          await this.prisma.coinPackage.create({
-            data: { ...pkg, isActive: true, sortOrder: i + 1 },
-          });
-        }
+        await this.prisma.coinPackage.create({
+          data: { ...pkg, isActive: true, sortOrder: i + 1 },
+        });
       }
     } catch {
       // Database may be unavailable during local development; static fallback handles it.
@@ -99,7 +98,7 @@ export class CoinPackagesService implements OnModuleInit {
     if (dto.amountSAR !== undefined) {
       data.amountSAR = Number(Number(dto.amountSAR).toFixed(2));
     } else if (amountUSD !== undefined) {
-      data.amountSAR = Number((amountUSD * CoinPackagesService.USD_TO_SAR).toFixed(2));
+      data.amountSAR = Number((amountUSD * usdToSarRate()).toFixed(2));
     }
     if (dto.name !== undefined) data.name = dto.name;
     if (dto.badge !== undefined) data.badge = dto.badge;

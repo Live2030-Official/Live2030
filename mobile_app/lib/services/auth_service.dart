@@ -225,6 +225,15 @@ class AuthService extends ChangeNotifier {
     return false;
   }
 
+  void updateVerification({bool? isVerified, String? verifiedLabel}) {
+    if (_currentUser == null) return;
+    _currentUser = _currentUser!.copyWith(
+      isVerified: isVerified,
+      verifiedLabel: verifiedLabel,
+    );
+    notifyListeners();
+  }
+
   void updateVipState({int? vipLevel, double? totalRechargedUSD, String? customId, String? customNameColor, Map<String, dynamic>? vipSettings}) {
     if (_currentUser == null) return;
     _currentUser = _currentUser!.copyWith(

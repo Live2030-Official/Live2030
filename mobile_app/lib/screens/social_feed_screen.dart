@@ -689,6 +689,8 @@ class _SocialFeedScreenState extends State<SocialFeedScreen> with SingleTickerPr
                             UserAvatarWithFrame(
                               avatarUrl: m['avatarUrl'],
                               vipLevel: mVip,
+                              isVerified: m['isVerified'] == true,
+                              verifiedLabel: m['verifiedLabel']?.toString(),
                               size: 48,
                               showBadge: true,
                             ),
@@ -797,6 +799,8 @@ class _SocialFeedScreenState extends State<SocialFeedScreen> with SingleTickerPr
                   leading: UserAvatarWithFrame(
                     avatarUrl: user['avatarUrl'],
                     vipLevel: uVip,
+                    isVerified: user['isVerified'] == true,
+                    verifiedLabel: user['verifiedLabel']?.toString(),
                     size: 46,
                     showBadge: true,
                   ),
@@ -973,6 +977,8 @@ class _SocialFeedScreenState extends State<SocialFeedScreen> with SingleTickerPr
                                 leading: UserAvatarWithFrame(
                                   avatarUrl: m['avatarUrl'],
                                   vipLevel: mVip,
+                                  isVerified: m['isVerified'] == true,
+                                  verifiedLabel: m['verifiedLabel']?.toString(),
                                   size: 42,
                                   showBadge: true,
                                 ),
@@ -1194,6 +1200,8 @@ class _PhotoPostCardState extends State<_PhotoPostCard> with SingleTickerProvide
                   child: UserAvatarWithFrame(
                     avatarUrl: avatar,
                     level: (author['level'] as num?)?.toInt() ?? 1,
+                    isVerified: author['isVerified'] == true,
+                    verifiedLabel: author['verifiedLabel']?.toString(),
                     size: 38,
                     showBadge: false,
                   ),
@@ -1470,6 +1478,8 @@ class _VideoPostCardState extends State<_VideoPostCard> {
                 UserAvatarWithFrame(
                   avatarUrl: avatar,
                   level: (author['level'] as num?)?.toInt() ?? 1,
+                  isVerified: author['isVerified'] == true,
+                  verifiedLabel: author['verifiedLabel']?.toString(),
                   size: 38,
                   showBadge: false,
                 ),
@@ -1935,6 +1945,8 @@ class _CommentsBottomSheetState extends State<_CommentsBottomSheet> {
           UserAvatarWithFrame(
             avatarUrl: avatar,
             size: isReply ? 26 : 34,
+            isVerified: author['isVerified'] == true,
+            verifiedLabel: author['verifiedLabel']?.toString(),
             showBadge: false,
           ),
           const SizedBox(width: 10),

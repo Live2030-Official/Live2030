@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, Request, UseGuards } from '@nestjs/common';
 import { WithdrawalsService } from './withdrawals.service';
 import {
   RequestWithdrawalDto,
@@ -6,14 +6,16 @@ import {
   ApproveWithdrawalDto,
 } from './dto/withdrawal.dto';
 import { RequirePermissions } from '../auth/permissions.decorator';
+import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 
 @Controller('api/withdrawals')
 export class WithdrawalsController {
   constructor(private readonly withdrawalsService: WithdrawalsService) {}
 
   @Post('request')
-  async requestWithdrawal(@Body() dto: RequestWithdrawalDto) {
-    return this.withdrawalsService.requestWithdrawal(dto);
+  @UseGuards(UserAuthGuard)
+  async requestWithdrawal(@Request() req: any, @Body() dto: RequestWithdrawalDto) {
+    return this.withdrawalsService.requestWithdrawal(dto, req.user.id);
   }
 
   @Get('pending')

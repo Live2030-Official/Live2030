@@ -327,6 +327,11 @@ export default function AdminHomePage() {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [twoFactorChallenge, setTwoFactorChallenge] = useState<string | null>(null);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorMethod, setTwoFactorMethod] = useState<string>('EMAIL');
+  const [twoFactorDebugOtp, setTwoFactorDebugOtp] = useState<string | null>(null);
+  const [twoFactorError, setTwoFactorError] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [adminPermissions, setAdminPermissions] = useState<string[]>([]);
 
@@ -358,6 +363,14 @@ export default function AdminHomePage() {
         body: JSON.stringify({ identifier: loginIdentifier.trim(), password: loginPassword }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.ok && data.requiresTwoFactor && data.challengeToken) {
+        setTwoFactorChallenge(data.challengeToken);
+        setTwoFactorMethod(data.method || 'EMAIL');
+        setTwoFactorDebugOtp(data.debugOtp || null);
+        setTwoFactorCode('');
+        setTwoFactorError('');
+        return;
+      }
       if (!res.ok || !data.accessToken) {
         setLoginError(data.message || 'Invalid credentials.');
         return;
@@ -369,6 +382,40 @@ export default function AdminHomePage() {
       setAdminPermissions(Array.isArray(data.permissions) ? data.permissions : []);
     } catch {
       setLoginError('Network error connecting to backend.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleAdminTwoFactorVerify = async () => {
+    if (!twoFactorChallenge) return;
+    if (!/^\d{6}$/.test(twoFactorCode.trim())) {
+      setTwoFactorError('Enter the 6-digit verification code.');
+      return;
+    }
+    setIsLoggingIn(true);
+    setTwoFactorError('');
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/auth/admin-2fa/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challengeToken: twoFactorChallenge, code: twoFactorCode.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.accessToken) {
+        setTwoFactorError(data.message || 'Invalid or expired verification code.');
+        return;
+      }
+      localStorage.setItem(ADMIN_TOKEN_KEY, data.accessToken);
+      localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(data.user || {}));
+      setAdminToken(data.accessToken);
+      setAdminUser(data.user || {});
+      setAdminPermissions(Array.isArray(data.permissions) ? data.permissions : []);
+      setTwoFactorChallenge(null);
+      setTwoFactorCode('');
+      setTwoFactorDebugOtp(null);
+    } catch {
+      setTwoFactorError('Network error connecting to backend.');
     } finally {
       setIsLoggingIn(false);
     }
@@ -407,6 +454,10 @@ export default function AdminHomePage() {
 
   // Financial & Commission Ledger Report State
   const [financialReport, setFinancialReport] = useState<any>(null);
+
+  // Recharge / coin-purchase orders (durable PaymentOrder ledger)
+  const [rechargeOrders, setRechargeOrders] = useState<any[]>([]);
+  const [rechargeSummary, setRechargeSummary] = useState<any>(null);
 
   // Dynamic Helpdesk & Support Contact Info
   const [supportContact, setSupportContact] = useState({
@@ -697,6 +748,14 @@ export default function AdminHomePage() {
       const resFin = await apiFetch(`${BACKEND_URL}/api/users/admin/financial-report`).catch(() => null);
       if (resFin && resFin.ok) {
         setFinancialReport(await resFin.json());
+      }
+
+      // 10. Recharge / coin purchase orders
+      const resRechargeOrders = await apiFetch(`${BACKEND_URL}/api/payments/admin/orders?limit=200`).catch(() => null);
+      if (resRechargeOrders && resRechargeOrders.ok) {
+        const data = await resRechargeOrders.json();
+        setRechargeOrders(Array.isArray(data?.orders) ? data.orders : []);
+        setRechargeSummary(data?.summary || null);
       }
 
       // 11. Support Contact Info
@@ -2442,6 +2501,80 @@ export default function AdminHomePage() {
           </div>
 
           <div className="bg-zinc-900/70 border border-white/10 rounded-3xl p-7 backdrop-blur-xl shadow-2xl">
+            {twoFactorChallenge ? (
+              <>
+                <div className="flex items-center gap-2 mb-4">
+                  <ShieldAlert className="w-5 h-5 text-indigo-400" />
+                  <div>
+                    <h2 className="text-sm font-bold text-white">Two-factor verification</h2>
+                    <p className="text-[11px] text-slate-500">
+                      Enter the 6-digit code sent via {twoFactorMethod === 'PHONE' ? 'SMS' : 'email'}.
+                    </p>
+                  </div>
+                </div>
+
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+                  Verification Code
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={twoFactorCode}
+                  onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAdminTwoFactorVerify()}
+                  placeholder="000000"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  className="w-full bg-zinc-950/70 border border-white/10 rounded-xl px-4 py-3 text-center tracking-[0.5em] font-mono text-lg text-white placeholder-slate-600 outline-none focus:border-indigo-500 transition mb-4"
+                />
+
+                {twoFactorDebugOtp && (
+                  <p className="text-[11px] text-amber-400/80 mb-3 font-mono">
+                    Dev code: {twoFactorDebugOtp}
+                  </p>
+                )}
+
+                {(twoFactorError || loginError) && (
+                  <div className="flex items-center gap-2 bg-red-950/60 border border-red-500/40 text-red-300 text-xs font-semibold rounded-xl px-3 py-2.5 mb-4">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{twoFactorError || loginError}</span>
+                  </div>
+                )}
+
+                <button
+                  onClick={handleAdminTwoFactorVerify}
+                  disabled={isLoggingIn}
+                  className="w-full bg-gradient-to-r from-indigo-600 to-fuchsia-600 hover:from-indigo-500 hover:to-fuchsia-500 disabled:opacity-50 text-white font-bold text-sm rounded-xl py-3.5 transition shadow-lg shadow-indigo-900/40 flex items-center justify-center gap-2"
+                >
+                  {isLoggingIn ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                      Verifying…
+                    </>
+                  ) : (
+                    <>
+                      <Key className="w-4 h-4" />
+                      Verify &amp; Sign in
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTwoFactorChallenge(null);
+                    setTwoFactorCode('');
+                    setTwoFactorError('');
+                    setTwoFactorDebugOtp(null);
+                  }}
+                  className="w-full mt-3 text-[11px] font-semibold text-slate-500 hover:text-slate-300"
+                >
+                  Back to sign in
+                </button>
+              </>
+            ) : (
+              <>
             <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">
               Email or Username
             </label>
@@ -2501,6 +2634,8 @@ export default function AdminHomePage() {
                 </>
               )}
             </button>
+              </>
+            )}
           </div>
 
           <p className="text-center text-[11px] text-slate-600 mt-6">
@@ -4610,6 +4745,98 @@ export default function AdminHomePage() {
                       Valued at: <span className="font-bold">${financialReport?.kpi?.totalCoinsUSD?.toFixed(2) || '0.00'} USD</span>
                     </p>
                   </div>
+                </div>
+              </div>
+
+              {/* Recharge & Coin Purchase Orders */}
+              <div className="bg-[#111827] border border-slate-800/80 rounded-2xl p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div>
+                    <h3 className="font-bold text-white text-base flex items-center gap-2">
+                      <Wallet className="w-4 h-4 text-amber-400" /> Recharge &amp; Coin Purchase Orders
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Durable payment-order ledger, reconciled with the coin wallet. Amounts in SAR / USD.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-[11px] font-semibold">
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                      Paid: {rechargeSummary?.paid ?? 0}
+                    </span>
+                    <span className="px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                      Pending: {rechargeSummary?.pending ?? 0}
+                    </span>
+                    <span className="px-2.5 py-1 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/30">
+                      Failed: {rechargeSummary?.failed ?? 0}
+                    </span>
+                    <span className="px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/30">
+                      Revenue: SAR {Number(rechargeSummary?.grossRevenueSAR ?? 0).toFixed(2)}
+                    </span>
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 border border-slate-700">
+                      Coins: {Number(rechargeSummary?.coinsSold ?? 0).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-slate-400 border-b border-slate-800">
+                        <th className="text-left py-2 px-2 font-semibold">Order</th>
+                        <th className="text-left py-2 px-2 font-semibold">User</th>
+                        <th className="text-left py-2 px-2 font-semibold">Package</th>
+                        <th className="text-right py-2 px-2 font-semibold">Coins</th>
+                        <th className="text-right py-2 px-2 font-semibold">Amount</th>
+                        <th className="text-left py-2 px-2 font-semibold">Status</th>
+                        <th className="text-left py-2 px-2 font-semibold">Created</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rechargeOrders.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="text-center text-slate-500 py-6">
+                            No recharge orders yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        rechargeOrders.slice(0, 100).map((order: any) => {
+                          const status = String(order.status || '').toUpperCase();
+                          const statusClass =
+                            status === 'PAID'
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                              : status === 'PENDING'
+                                ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                                : 'bg-rose-500/10 text-rose-400 border-rose-500/30';
+                          return (
+                            <tr key={order.id || order.externalId} className="border-b border-slate-800/60 hover:bg-slate-800/30">
+                              <td className="py-2 px-2 font-mono text-slate-400">
+                                {String(order.externalId || order.id || '').slice(0, 14)}
+                              </td>
+                              <td className="py-2 px-2 text-slate-200">
+                                {order.user?.displayName || order.user?.username || order.userId || '—'}
+                              </td>
+                              <td className="py-2 px-2 text-slate-300">{order.packageName || order.packageId || '—'}</td>
+                              <td className="py-2 px-2 text-right text-amber-300 font-semibold">
+                                {Number(order.coins || 0).toLocaleString()}
+                              </td>
+                              <td className="py-2 px-2 text-right text-slate-200">
+                                SAR {Number(order.amountSAR || 0).toFixed(2)}
+                                <span className="text-slate-500"> / ${Number(order.amountUSD || 0).toFixed(2)}</span>
+                              </td>
+                              <td className="py-2 px-2">
+                                <span className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${statusClass}`}>
+                                  {status || '—'}
+                                </span>
+                              </td>
+                              <td className="py-2 px-2 text-slate-400">
+                                {order.createdAt ? new Date(order.createdAt).toLocaleString() : '—'}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
 

@@ -1,14 +1,17 @@
-import { Controller, Get, Post, Put, Delete, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Request, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { GiftsService } from './gifts.service';
 import { SendGiftDto, CreateGiftDto } from './dto/gift.dto';
 import { RequirePermissions } from '../auth/permissions.decorator';
+import { UserAuthGuard } from '../auth/guards/user-auth.guard';
+import { Public } from '../auth/permissions.decorator';
 
 @ApiTags('Virtual Gifting & Economy')
 @Controller('api/gifts')
 export class GiftsController {
   constructor(private readonly giftsService: GiftsService) {}
 
+  @Public()
   @Get()
   @ApiOperation({ summary: 'Get active gift catalogue for mobile gift tray and admin' })
   async getGifts() {
@@ -30,10 +33,10 @@ export class GiftsController {
   }
 
   @Post('send')
+  @UseGuards(UserAuthGuard)
   @ApiOperation({ summary: 'Send virtual gift in live room' })
-  async sendGift(@Body() dto: SendGiftDto) {
-    const senderId = dto.senderId || 'user-supporter';
-    return this.giftsService.sendGift(senderId, dto);
+  async sendGift(@Request() req: any, @Body() dto: SendGiftDto) {
+    return this.giftsService.sendGift(req.user.id, dto);
   }
 
   @Post('admin/create')

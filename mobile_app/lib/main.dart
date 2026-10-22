@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +15,9 @@ import 'localization/language_selection_sheet.dart';
 import 'screens/agency_center_screen.dart';
 import 'screens/auth_screen.dart';
 import 'screens/contact_us_screen.dart';
+import 'screens/blocked_users_screen.dart';
+import 'screens/withdrawal_screen.dart';
+import 'screens/coin_history_screen.dart';
 import 'screens/earnings_report_screen.dart';
 import 'screens/games_center_screen.dart';
 import 'screens/live_room_screen.dart';
@@ -34,7 +38,11 @@ import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'widgets/topup_choice_dialog.dart';
 import 'theme/app_theme.dart';
 
-void main() async {
+void _reportCrash(Object error, StackTrace stack, String source) {
+  debugPrint('[$source] $error\n$stack');
+}
+
+Future<void> _bootstrap() async {
   final widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
 
@@ -59,6 +67,25 @@ void main() async {
   // Seamless transition from native splash to Flutter UI
   FlutterNativeSplash.remove();
   runApp(const Live2030App());
+}
+
+void main() {
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    _reportCrash(details.exception, details.stack ?? StackTrace.current, 'FlutterError');
+  };
+
+  runZonedGuarded(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+        _reportCrash(error, stack, 'PlatformDispatcher');
+        return true;
+      };
+      await _bootstrap();
+    },
+    (error, stack) => _reportCrash(error, stack, 'UncaughtZone'),
+  );
 }
 
 class Live2030App extends StatefulWidget {
@@ -160,6 +187,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         socketUrl,
         io.OptionBuilder()
             .setTransports(['websocket', 'polling'])
+            .setAuth({'token': AuthService().accessToken ?? ''})
             .enableAutoConnect()
             .enableReconnection()
             .setReconnectionDelay(2000)
@@ -234,8 +262,35 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       // Real-time User Level-Up & Test Celebration broadcast
       _globalSocket!.on('user_level_up', _handleUserLevelUp);
       _globalSocket!.on('user:level_up', _handleUserLevelUp);
+
+      // Real-time verification badge updates granted/removed by admins
+      _globalSocket!.on('user:verification_changed', _handleVerificationChanged);
+      _globalSocket!.on('verification_changed', _handleVerificationChanged);
     } catch (e) {
       debugPrint('Error initializing global socket: $e');
+    }
+  }
+
+  void _handleVerificationChanged(dynamic data) {
+    if (data == null) return;
+    final map = Map<String, dynamic>.from(data as Map);
+    final currentUserId = AuthService().currentUser?.id;
+    if (currentUserId == null || map['userId']?.toString() != currentUserId) return;
+    AuthService().updateVerification(
+      isVerified: map['isVerified'] == true,
+      verifiedLabel: map['verifiedLabel']?.toString(),
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: LiveColors.backgroundElevated,
+          content: Text(
+            map['isVerified'] == true
+                ? 'Your profile is now verified ${map['verifiedLabel'] ?? ''} ✅'.trim()
+                : 'Your verification badge was removed.',
+          ),
+        ),
+      );
     }
   }
 
@@ -866,6 +921,7 @@ class _LiveDiscoveryFeedScreenState extends State<LiveDiscoveryFeedScreen> {
         socketUrl,
         io.OptionBuilder()
             .setTransports(['websocket', 'polling'])
+            .setAuth({'token': AuthService().accessToken ?? ''})
             .enableAutoConnect()
             .enableReconnection()
             .setReconnectionDelay(2000)
@@ -1651,6 +1707,7 @@ class _VoicePartyHubScreenState extends State<VoicePartyHubScreen> {
         socketUrl,
         io.OptionBuilder()
             .setTransports(['websocket', 'polling'])
+            .setAuth({'token': AuthService().accessToken ?? ''})
             .enableAutoConnect()
             .enableReconnection()
             .setReconnectionDelay(2000)
@@ -3385,6 +3442,8 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                         leading: UserAvatarWithFrame(
                           avatarUrl: avatar,
                           vipLevel: vip,
+                          isVerified: visitor['isVerified'] == true,
+                          verifiedLabel: visitor['verifiedLabel']?.toString(),
                           size: 42,
                           showBadge: vip >= 1,
                         ),
@@ -4749,12 +4808,10 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                             const SizedBox(height: 12),
                             GestureDetector(
                               onTap: () {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    backgroundColor: const Color(0xFF10B981),
-                                    content: Text(r'Withdrawal desk open: 45,000 💎 = $450.00 USD.'.tr, style: GoogleFonts.plusJakartaSans()),
-                                  ),
-                                );
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(builder: (_) => const WithdrawalScreen()),
+                                ).then((_) => setState(() {}));
                               },
                               child: Container(
                                 width: double.infinity,
@@ -4801,6 +4858,30 @@ class _UserProfileScreenState extends State<UserProfileScreen> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(builder: (_) => const CoinResellersScreen()),
+                        );
+                      },
+                    ),
+                    _buildProfileTile(
+                      icon: Icons.receipt_long_rounded,
+                      iconColor: LiveColors.accentPink,
+                      title: 'Coin & Diamond History',
+                      subtitle: 'Recharges, gifts, withdrawals and payouts',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const CoinHistoryScreen()),
+                        );
+                      },
+                    ),
+                    _buildProfileTile(
+                      icon: Icons.block_rounded,
+                      iconColor: const Color(0xFFEF4444),
+                      title: 'Blocked Users',
+                      subtitle: 'Manage accounts you have blocked',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const BlockedUsersScreen()),
                         );
                       },
                     ),

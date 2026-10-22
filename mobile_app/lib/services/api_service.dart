@@ -173,7 +173,11 @@ class ApiService {
     try {
       final socket = io.io(
         '${ApiService.baseUrl}/live',
-        io.OptionBuilder().setTransports(['websocket', 'polling']).disableAutoConnect().build(),
+        io.OptionBuilder()
+            .setTransports(['websocket', 'polling'])
+            .setAuth({'token': AuthService().accessToken ?? ''})
+            .disableAutoConnect()
+            .build(),
       );
       final completer = Completer<Map<String, dynamic>?>();
       socket.connect();
@@ -254,6 +258,19 @@ class ApiService {
     } catch (e) {
       debugPrint('Error leaving room: $e');
     }
+  }
+
+  /// Wallet / coin transaction history for the signed-in user.
+  Future<List<Map<String, dynamic>>> getTransactions({int limit = 100}) async {
+    try {
+      final response = await _dio.get('/api/payments/transactions', queryParameters: {'limit': limit});
+      if (response.statusCode == 200 && response.data is List) {
+        return List<Map<String, dynamic>>.from(response.data);
+      }
+    } catch (e) {
+      debugPrint('Error fetching transactions: $e');
+    }
+    return [];
   }
 
   /// Fetch active virtual gift catalog
@@ -1601,14 +1618,25 @@ class ApiService {
   Future<List<Map<String, dynamic>>> getBlockedUsers() async {
     try {
       final response = await _dio.get('/api/blocks');
+      List<dynamic>? list;
       if (response.statusCode == 200 && response.data is Map) {
-        final list = response.data['blocked'] ?? response.data['blocks'];
-        if (list is List) {
-          return List<Map<String, dynamic>>.from(list);
-        }
+        list = response.data['blocked'] ?? response.data['blocks'];
+      } else if (response.statusCode == 200 && response.data is List) {
+        list = response.data;
       }
-      if (response.statusCode == 200 && response.data is List) {
-        return List<Map<String, dynamic>>.from(response.data);
+      if (list is List) {
+        // Backend returns { ...block, user: {...} }; flatten to the user object.
+        return list.map<Map<String, dynamic>>((entry) {
+          final row = Map<String, dynamic>.from(entry as Map);
+          final user = row['user'];
+          if (user is Map) {
+            return {
+              ...Map<String, dynamic>.from(user),
+              'blockedAt': row['createdAt'],
+            };
+          }
+          return row;
+        }).toList();
       }
     } catch (e) {
       debugPrint('Error fetching blocked users: $e');

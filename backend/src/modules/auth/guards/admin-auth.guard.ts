@@ -34,16 +34,25 @@ export class AdminAuthGuard implements CanActivate {
         context.getClass(),
       ]) || [];
 
-    // No permission requirement → public route (mobile/user APIs).
-    if (required.length === 0) return true;
-
     const isPublic = this.reflector.getAllAndOverride<boolean>(PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
-    if (isPublic) return true;
 
     const req: any = context.switchToHttp().getRequest();
+
+    // Safety net: any route that lives under an administrative path must be
+    // called by a staff account even when it forgot its @RequirePermissions
+    // decorator. Public mobile APIs keep working because they are not routed
+    // through an `/admin` path segment.
+    const path = String(req.path || req.originalUrl || '');
+    const pathImpliesStaff =
+      /(^|\/)admin(\/|$)/.test(path) || /(^|\/)staff(\/|$)/.test(path);
+
+    // No permission requirement → public route (mobile/user APIs).
+    if (required.length === 0 && !pathImpliesStaff) return true;
+
+    if (isPublic) return true;
     const authHeader: string = req.headers['authorization'] || req.headers['Authorization'] || '';
     const token = authHeader.startsWith('Bearer ')
       ? authHeader.slice(7)
@@ -76,7 +85,7 @@ export class AdminAuthGuard implements CanActivate {
     }
 
     const effective = resolvePermissions(user as any);
-    if (!hasAllPermissions(effective, required)) {
+    if (required.length > 0 && !hasAllPermissions(effective, required)) {
       throw new ForbiddenException('Insufficient permissions for this action.');
     }
 

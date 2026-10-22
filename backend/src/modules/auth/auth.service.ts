@@ -697,12 +697,57 @@ export class AuthService {
     });
 
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (method === 'PHONE' && user?.phone) {
-      console.log(`[Admin 2FA] SMS OTP for ${user.phone}: ${code}`);
-    } else if (user?.email) {
-      console.log(`[Admin 2FA] Email OTP for ${user.email}: ${code}`);
-    }
+    await this.deliverAdminOtp(user, method, code);
     return code;
+  }
+
+  /**
+   * Delivers an admin OTP through the configured webhook (SMS/email gateway).
+   * In non-production the code is also logged so local sign-in keeps working.
+   */
+  private async deliverAdminOtp(
+    user: { email?: string | null; phone?: string | null } | null,
+    method: string,
+    code: string,
+  ): Promise<boolean> {
+    const webhookUrl = process.env.ADMIN_2FA_OTP_WEBHOOK_URL;
+    const isProduction = (process.env.NODE_ENV || 'development') === 'production';
+    const destination = method === 'PHONE' ? user?.phone : user?.email;
+
+    if (webhookUrl) {
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (process.env.ADMIN_2FA_OTP_WEBHOOK_TOKEN) {
+          headers.Authorization = `Bearer ${process.env.ADMIN_2FA_OTP_WEBHOOK_TOKEN}`;
+        }
+        const res = await fetch(webhookUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            channel: method === 'PHONE' ? 'SMS' : 'EMAIL',
+            to: destination,
+            code,
+            purpose: 'ADMIN_LOGIN',
+          }),
+        });
+        if (!res.ok) {
+          console.error(`[Admin 2FA] OTP webhook responded ${res.status}`);
+        } else {
+          return true;
+        }
+      } catch (err: any) {
+        console.error(`[Admin 2FA] OTP webhook failed: ${err?.message || err}`);
+      }
+    }
+
+    if (!isProduction) {
+      console.log(`[Admin 2FA] ${method} OTP for ${destination || 'staff account'}: ${code}`);
+    } else if (!webhookUrl) {
+      console.error(
+        '[Admin 2FA] No ADMIN_2FA_OTP_WEBHOOK_URL configured; cannot deliver the verification code.',
+      );
+    }
+    return false;
   }
 
   async adminTwoFactorStatus(userId: string) {
@@ -810,9 +855,18 @@ export class AuthService {
       orderBy: { createdAt: 'desc' },
     });
     if (!otp) return false;
-    const valid = await bcrypt.compare(code, otp.codeHash);
+    // Cap verification attempts so a stolen challenge token cannot be brute-forced.
+    if (otp.attempts >= 5) {
+      await this.prisma.twoFactorOtp.update({ where: { id: otp.id }, data: { consumed: true } });
+      return false;
+    }
+    const normalizedCode = String(code || '').trim();
+    const valid = await bcrypt.compare(normalizedCode, otp.codeHash);
     if (!valid) {
-      await this.prisma.twoFactorOtp.update({ where: { id: otp.id }, data: { attempts: { increment: 1 } } });
+      await this.prisma.twoFactorOtp.update({
+        where: { id: otp.id },
+        data: { attempts: { increment: 1 }, ...(otp.attempts + 1 >= 5 ? { consumed: true } : {}) },
+      });
       return false;
     }
     await this.prisma.twoFactorOtp.update({ where: { id: otp.id }, data: { consumed: true } });

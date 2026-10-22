@@ -8,10 +8,10 @@ export enum MediaType {
 }
 
 export class CreatePostDto {
-  @ApiProperty({ description: 'User ID of the author' })
+  @ApiProperty({ description: 'User ID of the author (ignored - server uses the JWT identity)' })
   @IsString()
-  @IsNotEmpty()
-  authorId: string;
+  @IsOptional()
+  authorId?: string;
 
   @ApiProperty({ enum: MediaType, default: MediaType.PHOTO })
   @IsEnum(MediaType)
@@ -59,17 +59,17 @@ export class QueryPostsDto {
 }
 
 export class ToggleLikeDto {
-  @ApiProperty({ description: 'User ID performing the like' })
+  @ApiProperty({ description: 'User ID performing the like (ignored - server uses the JWT identity)' })
   @IsString()
-  @IsNotEmpty()
-  userId: string;
+  @IsOptional()
+  userId?: string;
 }
 
 export class AddCommentDto {
-  @ApiProperty({ description: 'User ID of commenter' })
+  @ApiProperty({ description: 'User ID of commenter (ignored - server uses the JWT identity)' })
   @IsString()
-  @IsNotEmpty()
-  authorId: string;
+  @IsOptional()
+  authorId?: string;
 
   @ApiProperty({ description: 'Comment text content' })
   @IsString()
@@ -83,8 +83,8 @@ export class AddCommentDto {
 }
 
 export class ToggleFollowDto {
-  @ApiProperty({ description: 'User ID of the follower' })
+  @ApiProperty({ description: 'User ID of the follower (ignored - server uses the JWT identity)' })
   @IsString()
-  @IsNotEmpty()
-  followerId: string;
+  @IsOptional()
+  followerId?: string;
 }

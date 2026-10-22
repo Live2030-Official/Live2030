@@ -8,7 +8,14 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, Inject, forwardRef } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+  Inject,
+  UnauthorizedException,
+  forwardRef,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AgoraTokenService } from '../rooms/agora-token.service';
@@ -23,6 +30,8 @@ interface RoomViewer {
   customId?: string;
   level?: number;
   frameUrl?: string;
+  isVerified?: boolean;
+  verifiedLabel?: string | null;
   stealthRoomAccess?: boolean;
 }
 
@@ -106,7 +115,183 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
   ) {}
 
   handleConnection(client: Socket) {
-    this.logger.log(`⚡ WebSocket client connected: ${client.id}`);
+    // Authenticate the socket handshake so privileged room actions (kick/ban/gifts)
+    // can never be spoofed by simply passing somebody else's userId in the payload.
+    const token =
+      (client.handshake?.auth as any)?.token ||
+      (client.handshake?.query as any)?.token ||
+      String((client.handshake?.headers as any)?.authorization || '').replace(/^Bearer\s+/i, '');
+
+    if (token) {
+      try {
+        const payload: any = this.jwtService.verify(token);
+        if (payload?.sub) {
+          client.data.userId = payload.sub;
+          client.data.jwt = payload;
+        }
+      } catch {
+        client.data.userId = undefined;
+      }
+    }
+
+    this.logger.log(
+      `⚡ WebSocket client connected: ${client.id}${client.data?.userId ? ` (auth user ${client.data.userId})` : ' (unauthenticated)'}`,
+    );
+  }
+
+  /** Returns the authenticated user id bound to this socket, if any. */
+  private getAuthenticatedUserId(client: Socket): string | undefined {
+    return client.data?.userId || undefined;
+  }
+
+  /**
+   * Central room access policy shared by the join/token/kick/ban handlers:
+   *  - banned users can never enter
+   *  - PIN protected rooms require the correct PIN (host always allowed)
+   */
+  /** Reads a benefit toggle from the admin-configured VIP tier config. */
+  private async tierHasFeature(vipLevel: number, featureKey: string): Promise<boolean> {
+    if (!vipLevel || vipLevel < 1) return false;
+    try {
+      const config = await (this.prisma as any).levelConfig.findUnique({ where: { level: vipLevel } });
+      const features = (config?.features || {}) as Record<string, boolean | undefined>;
+      return features[featureKey] === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async checkRoomAccess(
+    roomId: string,
+    userId?: string,
+    roomPin?: string,
+  ): Promise<{ allowed: boolean; message?: string; room?: any }> {
+    let room: any = null;
+    try {
+      room = await this.prisma.liveRoom.findFirst({
+        where: { OR: [{ id: roomId }, { agoraChannelName: roomId }] },
+        select: {
+          id: true,
+          hostId: true,
+          isLocked: true,
+          roomPin: true,
+          bannedUserIds: true,
+          moderatorIds: true,
+        },
+      });
+    } catch {
+      return { allowed: true };
+    }
+    if (!room) return { allowed: true };
+
+    if (userId && (room.bannedUserIds || []).includes(userId)) {
+      return { allowed: false, message: 'You have been banned from this room.', room };
+    }
+    if (room.isLocked && room.roomPin && room.hostId !== userId) {
+      if (String(roomPin || '') !== String(room.roomPin)) {
+        return { allowed: false, message: 'LOCKED_ROOM_PIN_REQUIRED', room };
+      }
+    }
+    return { allowed: true, room };
+  }
+
+  /** Loads the authoritative (server-side) viewer profile; client payloads cannot spoof VIP level. */
+  private async resolveViewerProfile(userId: string | undefined, data: any) {
+    let vipLevel = 0;
+    let customId: string | undefined = undefined;
+    let avatarUrl: string | undefined = undefined;
+    let level = 1;
+    let customNameColor: string | undefined = undefined;
+    let isBanned = false;
+    let isVerified = false;
+    let verifiedLabel: string | null = null;
+    let vipSettings: any = {};
+
+    if (userId) {
+      const dbUser = await this.prisma.user
+        .findUnique({
+          where: { id: userId },
+          select: {
+            vipLevel: true,
+            customId: true,
+            avatarUrl: true,
+            level: true,
+            customNameColor: true,
+            isBanned: true,
+            isVerified: true,
+            verifiedLabel: true,
+            vipSettings: true,
+            status: true,
+            suspensionUntil: true,
+          },
+        })
+        .catch(() => null);
+      if (dbUser) {
+        vipLevel = (dbUser as any).vipLevel || 0;
+        customId = (dbUser as any).customId || undefined;
+        avatarUrl = (dbUser as any).avatarUrl || undefined;
+        level = (dbUser as any).level || 1;
+        customNameColor = (dbUser as any).customNameColor || undefined;
+        const suspendedUntil = (dbUser as any).suspensionUntil
+          ? new Date((dbUser as any).suspensionUntil).getTime()
+          : 0;
+        const temporarilySuspended =
+          ((dbUser as any).status || '').startsWith('SUSPENDED_') &&
+          (!suspendedUntil || suspendedUntil > Date.now());
+        isBanned = (dbUser as any).isBanned === true || temporarilySuspended;
+        isVerified = (dbUser as any).isVerified === true;
+        verifiedLabel = (dbUser as any).verifiedLabel || null;
+        vipSettings = ((dbUser as any).vipSettings || {}) as any;
+      }
+    }
+
+    return {
+      vipLevel,
+      customId,
+      avatarUrl,
+      level,
+      customNameColor,
+      isBanned,
+      isVerified,
+      verifiedLabel,
+      // VIP 8 stealth room access is a per-user privacy setting.
+      vipSettingsHidden: vipSettings?.stealthRoomAccess === true,
+      // Cosmetic frame/effect data can still come from the client payload.
+      frameUrl: data?.frameUrl,
+      badgeColor: data?.badgeColor,
+      entryEffectType: data?.entryEffectType,
+      entryEffectUrl: data?.entryEffectUrl,
+    };
+  }
+
+  /** True when the user owns the room or is one of its moderators. */
+  private async isRoomModerator(roomId: string, userId?: string): Promise<boolean> {
+    if (!userId) return false;
+    const room = await this.prisma.liveRoom
+      .findFirst({
+        where: { OR: [{ id: roomId }, { agoraChannelName: roomId }] },
+        select: { hostId: true, moderatorIds: true },
+      })
+      .catch(() => null);
+    if (!room) return false;
+    return room.hostId === userId || (room.moderatorIds || []).includes(userId);
+  }
+
+  /** Removes a viewer from a room (used by kick / ban enforcement). */
+  private evictFromRoom(roomId: string, targetUserId: string, reason: string) {
+    const viewers = this.roomViewers.get(roomId);
+    if (viewers) {
+      for (const [socketId, viewer] of viewers.entries()) {
+        if (viewer.userId === targetUserId) {
+          const socket = this.server?.sockets?.sockets?.get(socketId);
+          try {
+            socket?.leave(roomId);
+            socket?.emit('room:user_removed', { roomId, targetUserId, reason });
+          } catch {}
+          viewers.delete(socketId);
+        }
+      }
+    }
   }
 
   handleDisconnect(client: Socket) {
@@ -166,8 +351,14 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { userId: string },
   ) {
-    const userId = data?.userId;
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    const userId = authenticatedId || data?.userId;
     if (!userId) return;
+    // A socket may only subscribe to its own personal notification channel.
+    if (authenticatedId && data?.userId && data.userId !== authenticatedId) {
+      client.emit('user:join_failed', { message: 'Cannot subscribe to another user channel.' });
+      return;
+    }
     client.join(`user_${userId}`);
     let set = this.userSockets.get(userId);
     if (!set) {
@@ -183,15 +374,41 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
    * Real-Time WebSocket Token Provider (Ultra-resilient fallback bypassing HTTP)
    */
   @SubscribeMessage('room:token:request')
-  handleTokenRequest(
+  async handleTokenRequest(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { channelName: string; isPublisher?: boolean },
+    @MessageBody() data: { channelName: string; isPublisher?: boolean; roomPin?: string },
   ) {
     const channelName = data?.channelName || `live_${Date.now()}`;
+    const userId = this.getAuthenticatedUserId(client);
+
+    const access = await this.checkRoomAccess(channelName, userId, data?.roomPin);
+    if (!access.allowed) {
+      client.emit('room:token:error', {
+        channelName,
+        message: access.message || 'You cannot join this room.',
+      });
+      return;
+    }
+
+    // Publishing rights are reserved for the room host and its moderators.
+    let isPublisher = Boolean(data?.isPublisher);
+    if (isPublisher) {
+      const room = access.room;
+      const isHost = room && userId && room.hostId === userId;
+      const isModerator = room && userId && (room.moderatorIds || []).includes(userId);
+      if (!isHost && !isModerator) {
+        client.emit('room:token:error', {
+          channelName,
+          message: 'Only the host or a moderator can publish in this room.',
+        });
+        return;
+      }
+    }
+
     const agoraAuth = this.agoraTokenService.generateRtcToken(
       channelName,
       0,
-      data?.isPublisher || false,
+      isPublisher,
       86400,
     );
     this.logger.log(`⚡ [WebSocket] Issued Agora Token for client ${client.id} in channel ${channelName}`);
@@ -209,13 +426,19 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { userId: string },
   ) {
-    if (data?.userId) {
-      if (!this.userSockets.has(data.userId)) {
-        this.userSockets.set(data.userId, new Set());
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    const userId = authenticatedId || data?.userId;
+    if (userId) {
+      if (authenticatedId && data?.userId && data.userId !== authenticatedId) {
+        client.emit('user:register_failed', { message: 'Cannot register another user.' });
+        return;
       }
-      this.userSockets.get(data.userId)!.add(client.id);
-      this.logger.log(`👤 User socket registered: User ${data.userId} -> Socket ${client.id}`);
-      client.emit('user:registered', { userId: data.userId, socketId: client.id });
+      if (!this.userSockets.has(userId)) {
+        this.userSockets.set(userId, new Set());
+      }
+      this.userSockets.get(userId)!.add(client.id);
+      this.logger.log(`👤 User socket registered: User ${userId} -> Socket ${client.id}`);
+      client.emit('user:registered', { userId, socketId: client.id });
     }
   }
 
@@ -302,7 +525,7 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
    * Client joins a live room (Video or Voice Party)
    */
   @SubscribeMessage('room:join')
-  handleJoinRoom(
+  async handleJoinRoom(
     @ConnectedSocket() client: Socket,
     @MessageBody()
     data: {
@@ -321,8 +544,28 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
       entryEffectUrl?: string;
     },
   ) {
-    const { roomId, userId, displayName, avatarUrl, isVoice } = data;
+    const { roomId, displayName, isVoice } = data;
     if (!roomId) return;
+
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    const userId = authenticatedId || data.userId;
+
+    const access = await this.checkRoomAccess(roomId, userId, (data as any).roomPin);
+    if (!access.allowed) {
+      client.emit('room:join_failed', { roomId, message: access.message || 'Access denied.' });
+      this.logger.warn(`⛔ Rejected room:join for ${userId || 'unknown'} in ${roomId}: ${access.message}`);
+      return;
+    }
+
+    const profile = await this.resolveViewerProfile(userId, data);
+    if (profile.isBanned) {
+      client.emit('room:join_failed', { roomId, message: 'This account has been suspended.' });
+      return;
+    }
+
+    const avatarUrl = profile.avatarUrl || data.avatarUrl;
+    const customId = profile.customId || data.customId;
+    const level = profile.level || data.level || 1;
 
     client.join(roomId);
 
@@ -330,8 +573,9 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
       this.roomViewers.set(roomId, new Map());
     }
 
-    const vipLevel = Number(data.vipLevel) || 0;
-    const isStealth = Boolean(data.stealthRoomAccess) && vipLevel >= 8;
+    // VIP level always comes from the database - never from the client payload.
+    const vipLevel = profile.vipLevel;
+    const isStealth = vipLevel >= 8 && profile.vipSettingsHidden !== true;
 
     const viewersMap = this.roomViewers.get(roomId)!;
     viewersMap.set(client.id, {
@@ -340,9 +584,11 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
       displayName: displayName || 'Audience Member',
       avatarUrl,
       vipLevel,
-      customId: data.customId,
-      level: data.level || 1,
-      frameUrl: data.frameUrl,
+      customId,
+      level,
+      frameUrl: profile.frameUrl,
+      isVerified: profile.isVerified,
+      verifiedLabel: profile.verifiedLabel,
       stealthRoomAccess: isStealth,
     });
 
@@ -398,7 +644,7 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
           displayName: 'System',
           level: 99,
         },
-        text: `${data.customId ? `👑 [ID: ${data.customId}] ` : ''}${displayName || 'A viewer'} joined the room! ✨`,
+        text: `${customId ? `👑 [ID: ${customId}] ` : ''}${displayName || 'A viewer'} joined the room! ✨`,
         isSystem: true,
         timestamp: Date.now(),
       });
@@ -406,25 +652,25 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
 
     // VIP Entrance Animation Effect (VIP 4+)
     if (vipLevel >= 4 && !isStealth) {
-      const entryType = data.entryEffectType || (vipLevel >= 8 ? 'HIGHEST' : vipLevel >= 7 ? 'LEGENDARY' : 'SPECIAL');
+      const entryType = profile.entryEffectType || (vipLevel >= 8 ? 'HIGHEST' : vipLevel >= 7 ? 'LEGENDARY' : 'SPECIAL');
       this.server.to(roomId).emit('room:vip_entrance', {
         roomId,
         userId,
         displayName,
-        customId: data.customId,
+        customId,
         avatarUrl,
         vipLevel,
-        badgeColor: data.badgeColor || '#F59E0B',
-        frameUrl: data.frameUrl,
+        badgeColor: profile.badgeColor || profile.customNameColor || '#F59E0B',
+        frameUrl: profile.frameUrl,
         entryEffectType: entryType,
-        entryEffectUrl: data.entryEffectUrl,
+        entryEffectUrl: profile.entryEffectUrl,
         timestamp: Date.now(),
       });
 
       // VIP 8 Global Platform Marquee announcement
       if (vipLevel >= 8) {
         this.server.emit('room:global_marquee', {
-          message: `👑 Supreme VIP 8 Sovereign ${data.customId ? `[ID: ${data.customId}] ` : ''}${displayName} has entered the room!`,
+          message: `👑 Supreme VIP 8 Sovereign ${customId ? `[ID: ${customId}] ` : ''}${displayName} has entered the room!`,
           vipLevel: 8,
           userId,
           displayName,
@@ -439,12 +685,22 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
    * Voice Party: Occupy a mic seat (Seat #1 - #7)
    */
   @SubscribeMessage('voice:seat:occupy')
-  handleOccupySeat(
+  async handleOccupySeat(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { roomId: string; seatIndex: number; user: { id: string; displayName: string; avatarUrl?: string; level?: number } },
   ) {
     const { roomId, seatIndex, user } = data;
     if (!roomId || seatIndex === undefined) return;
+
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    const occupantId = authenticatedId || user?.id;
+    if (!occupantId) return;
+
+    const access = await this.checkRoomAccess(roomId, occupantId, (data as any).roomPin);
+    if (!access.allowed) {
+      client.emit('voice:seat:error', { message: access.message || 'Access denied.' });
+      return;
+    }
 
     const seats = this.initVoiceSeats(roomId);
     if (seatIndex < 0 || seatIndex >= seats.length) return;
@@ -455,8 +711,23 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
       return;
     }
 
+    // A seat can only be taken when it is free - or by the person already sitting there.
+    const currentOccupantId = (targetSeat.user as any)?.id;
+    if (currentOccupantId && currentOccupantId !== occupantId) {
+      const isModerator = await this.isRoomModerator(roomId, occupantId);
+      if (!isModerator) {
+        client.emit('voice:seat:error', { message: 'This mic seat is already taken.' });
+        return;
+      }
+    }
+
     // Assign user to seat
-    targetSeat.user = user;
+    targetSeat.user = {
+      id: occupantId,
+      displayName: user?.displayName || 'Guest',
+      avatarUrl: user?.avatarUrl,
+      level: user?.level || 1,
+    };
     targetSeat.isMuted = false;
 
     // Broadcast updated seats to all participants
@@ -478,17 +749,30 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
    * Voice Party: Step down from mic seat
    */
   @SubscribeMessage('voice:seat:leave')
-  handleLeaveSeat(
+  async handleLeaveSeat(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { roomId: string; seatIndex: number },
   ) {
     const { roomId, seatIndex } = data;
     if (!roomId || seatIndex === undefined) return;
 
+    const authenticatedId = this.getAuthenticatedUserId(client);
     const seats = this.initVoiceSeats(roomId);
     if (seatIndex < 0 || seatIndex >= seats.length) return;
 
     const user = seats[seatIndex].user;
+    const occupantId = (user as any)?.id;
+    if (occupantId && authenticatedId && occupantId !== authenticatedId) {
+      const isModerator = await this.isRoomModerator(roomId, authenticatedId);
+      if (!isModerator) {
+        client.emit('voice:seat:action_failed', {
+          seatIndex,
+          message: 'You can only step down from your own seat.',
+        });
+        return;
+      }
+    }
+
     seats[seatIndex].user = null;
     seats[seatIndex].isMuted = false;
 
@@ -509,30 +793,56 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
    * Voice Party: Host mutes / unmutes a seat
    */
   @SubscribeMessage('voice:seat:mute')
-  handleMuteSeat(
+  async handleMuteSeat(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { roomId: string; seatIndex: number; isMuted: boolean },
   ) {
     const { roomId, seatIndex, isMuted } = data;
     if (!roomId || seatIndex === undefined) return;
 
-    const seats = this.initVoiceSeats(roomId);
-    if (seatIndex >= 0 && seatIndex < seats.length) {
-      seats[seatIndex].isMuted = isMuted;
-      this.server.to(roomId).emit('voice:seats:sync', { roomId, seats });
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    if (!authenticatedId) {
+      client.emit('voice:seat:action_failed', { seatIndex, message: 'Authentication required.' });
+      return;
     }
+
+    const seats = this.initVoiceSeats(roomId);
+    if (seatIndex < 0 || seatIndex >= seats.length) return;
+
+    // Either the host/moderator, or the person occupying the seat (self-mute).
+    const occupantId = (seats[seatIndex].user as any)?.id;
+    const isModerator = await this.isRoomModerator(roomId, authenticatedId);
+    if (!isModerator && occupantId !== authenticatedId) {
+      client.emit('voice:seat:action_failed', {
+        seatIndex,
+        message: 'Only the host, a moderator or the seat owner can mute this seat.',
+      });
+      return;
+    }
+
+    seats[seatIndex].isMuted = isMuted;
+    this.server.to(roomId).emit('voice:seats:sync', { roomId, seats });
   }
 
   /**
    * Voice Party: Host locks / unlocks an empty seat
    */
   @SubscribeMessage('voice:seat:lock')
-  handleLockSeat(
+  async handleLockSeat(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { roomId: string; seatIndex: number; isLocked: boolean },
   ) {
     const { roomId, seatIndex, isLocked } = data;
     if (!roomId || seatIndex === undefined) return;
+
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    if (!authenticatedId || !(await this.isRoomModerator(roomId, authenticatedId))) {
+      client.emit('voice:seat:action_failed', {
+        seatIndex,
+        message: 'Only the host or a moderator can lock seats.',
+      });
+      return;
+    }
 
     const seats = this.initVoiceSeats(roomId);
     if (seatIndex >= 0 && seatIndex < seats.length) {
@@ -546,20 +856,38 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
    * Voice Party: Host kicks user from seat
    */
   @SubscribeMessage('voice:seat:kick')
-  handleKickSeat(
+  async handleKickSeat(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { roomId: string; seatIndex: number },
   ) {
     const { roomId, seatIndex } = data;
     if (!roomId || seatIndex === undefined) return;
 
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    if (!authenticatedId || !(await this.isRoomModerator(roomId, authenticatedId))) {
+      client.emit('voice:seat:action_failed', {
+        seatIndex,
+        message: 'Only the host or a moderator can remove users from a seat.',
+      });
+      return;
+    }
+
     const seats = this.initVoiceSeats(roomId);
     if (seatIndex >= 0 && seatIndex < seats.length) {
       const seatedUser = seats[seatIndex].user as any;
-      if (seatedUser && (seatedUser.vipLevel || 0) >= 5) {
+      const seatedVipLevel = seatedUser?.id
+        ? (await this.prisma.user
+            .findUnique({ where: { id: seatedUser.id }, select: { vipLevel: true } })
+            .catch(() => null))?.vipLevel || 0
+        : seatedUser?.vipLevel || 0;
+      const seatKickProtected =
+        seatedUser != null &&
+        ((await this.tierHasFeature(seatedVipLevel, 'kickProtection')) ||
+          (await this.tierHasFeature(seatedVipLevel, 'kickImmunity')));
+      if (seatKickProtected) {
         client.emit('voice:seat:action_failed', {
           seatIndex,
-          message: `Cannot kick ${seatedUser.displayName || 'Guest'}! User has VIP ${seatedUser.vipLevel} Kick Protection & Immunity! 🛡️`,
+          message: `Cannot kick ${seatedUser.displayName || 'Guest'}! User has VIP ${seatedVipLevel} Kick Protection & Immunity! 🛡️`,
         });
         return;
       }
@@ -738,23 +1066,47 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
   /**
    * Real-time 1-on-1 Direct Messaging event broadcast
    */
+  /**
+   * Subscribe to the personal direct-message channel of the signed-in user.
+   * The mobile chat screen emits `chat:join` right after connecting so it can
+   * receive live messages; without this handler DMs were never delivered.
+   */
+  @SubscribeMessage('chat:join')
+  handleChatJoin(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { userId?: string },
+  ) {
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    if (authenticatedId && data?.userId && data.userId !== authenticatedId) {
+      client.emit('chat:join_failed', { message: 'Cannot join another user chat channel.' });
+      return;
+    }
+    const userId = authenticatedId || data?.userId;
+    if (!userId) return;
+
+    client.join(`user_${userId}`);
+    if (!this.userSockets.has(userId)) {
+      this.userSockets.set(userId, new Set());
+    }
+    this.userSockets.get(userId)!.add(client.id);
+    this.logger.log(`💬 User ${userId} joined the direct-message channel.`);
+    client.emit('chat:joined', { userId, timestamp: Date.now() });
+  }
+
+  /**
+   * Direct messages are persisted and broadcast by the REST endpoint
+   * (`POST /api/social/chats/send`) which enforces block rules and VIP privacy.
+   * Clients may therefore only READ from this channel - sending over the socket
+   * would create messages that bypass moderation and are never stored.
+   */
   @SubscribeMessage('chat:direct')
   handleDirectMessage(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { senderId: string; receiverId: string; content?: string; imageUrl?: string; sender?: any },
+    @MessageBody() data: { senderId?: string; receiverId?: string; content?: string; imageUrl?: string; sender?: any },
   ) {
-    if (!data?.receiverId || (!data?.content && !data?.imageUrl)) return;
-    const payload = {
-      id: `dm_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-      senderId: data.senderId,
-      receiverId: data.receiverId,
-      content: data.content || '',
-      imageUrl: data.imageUrl || null,
-      sender: data.sender,
-      createdAt: new Date().toISOString(),
-    };
-    this.server.to(`user_${data.receiverId}`).emit('chat:direct', payload);
-    this.server.to(`user_${data.senderId}`).emit('chat:direct', payload);
+    client.emit('chat:direct_rejected', {
+      message: 'Direct messages must be sent through POST /api/social/chats/send.',
+    });
   }
 
   /**
@@ -775,7 +1127,9 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
     const { roomId, targetUserId, targetUserName } = data;
     if (!roomId || !targetUserId) return;
 
-    const requesterId = data.requesterId || data.hostId;
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    // The authenticated socket identity wins over anything supplied in the payload.
+    const requesterId = authenticatedId || data.requesterId || data.hostId;
     const room = await this.prisma.liveRoom
       .findFirst({
         where: { OR: [{ id: roomId }, { agoraChannelName: roomId }] },
@@ -783,6 +1137,13 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
       })
       .catch(() => null);
     if (room) {
+      if (!authenticatedId) {
+        client.emit('room:kick_failed', {
+          targetUserId,
+          message: 'Authentication required to moderate a room.',
+        });
+        return;
+      }
       const allowed = requesterId === room.hostId || (room.moderatorIds || []).includes(requesterId);
       if (!allowed) {
         client.emit('room:kick_failed', {
@@ -807,8 +1168,11 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
     const vipLevel = user?.vipLevel || 0;
 
 
-    // VIP 5+ Kick Protection and VIP 7+ Kick Immunity
-    if (vipLevel >= 5) {
+    // Kick protection / immunity is a per-tier admin-configurable VIP benefit.
+    const hasKickProtection =
+      (await this.tierHasFeature(vipLevel, 'kickProtection')) ||
+      (await this.tierHasFeature(vipLevel, 'kickImmunity'));
+    if (hasKickProtection) {
       client.emit('room:kick_failed', {
         targetUserId,
         message: `Kick action rejected! ${targetUserName || 'User'} has VIP ${vipLevel} Kick Protection & Immunity! 👑`,
@@ -821,6 +1185,9 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
       targetUserId,
       message: `${targetUserName || 'A viewer'} was kicked from the stream.`,
     });
+
+    // Actually remove the viewer from the room instead of only announcing it.
+    this.evictFromRoom(roomId, targetUserId, 'kicked');
   }
 
   /**
@@ -841,7 +1208,8 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
     const { roomId, targetUserId, targetUserName } = data;
     if (!roomId || !targetUserId) return;
 
-    const requesterId = data.requesterId || data.hostId;
+    const authenticatedId = this.getAuthenticatedUserId(client);
+    const requesterId = authenticatedId || data.requesterId || data.hostId;
     const room = await this.prisma.liveRoom
       .findFirst({
         where: { OR: [{ id: roomId }, { agoraChannelName: roomId }] },
@@ -849,6 +1217,13 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
       })
       .catch(() => null);
     if (room) {
+      if (!authenticatedId) {
+        client.emit('room:ban_failed', {
+          targetUserId,
+          message: 'Authentication required to moderate a room.',
+        });
+        return;
+      }
       const allowed = requesterId === room.hostId || (room.moderatorIds || []).includes(requesterId);
       if (!allowed) {
         client.emit('room:ban_failed', {
@@ -865,8 +1240,9 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
     const user = targetUser || UsersService.usersMap.get(targetUserId);
     const vipLevel = user?.vipLevel || 0;
 
-    // VIP 5+ Ban Protection
-    if (vipLevel >= 5) {
+    // Ban protection is a per-tier admin-configurable VIP benefit.
+    const hasBanProtection = await this.tierHasFeature(vipLevel, 'banProtection');
+    if (hasBanProtection) {
       client.emit('room:ban_failed', {
         targetUserId,
         message: `Ban action rejected! ${targetUserName || 'User'} has VIP ${vipLevel} Ban Protection! 👑`,
@@ -879,66 +1255,46 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
       targetUserId,
       message: `${targetUserName || 'A viewer'} has been muted/banned by stream moderator.`,
     });
+
+    // Persist the ban so it survives a backend restart and blocks re-entry.
+    if (room?.id) {
+      await this.prisma.liveRoom
+        .update({
+          where: { id: room.id },
+          data: { bannedUserIds: { push: targetUserId } },
+        })
+        .catch(() => null);
+    }
+
+    // Remove the banned viewer from the room immediately.
+    this.evictFromRoom(roomId, targetUserId, 'banned');
   }
 
   /**
-   * Real-time Gift Send Event via WebSocket (Supports target seat or room host)
+   * Room reaction (heart emoji).
+   *
+   * Gifts are intentionally NOT handled over the socket any more: the legacy
+   * `gift:send` event credited diamonds without ever debiting the sender's
+   * wallet (free-gift exploit). The authoritative path is `POST /api/gifts/send`,
+   * which deducts the balance atomically and then broadcasts the animation,
+   * the PK score and the wallet updates.
    */
-  @SubscribeMessage('gift:send')
-  handleGiftSend(
+  @SubscribeMessage('reaction:heart')
+  handleReactionHeart(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { roomId: string; gift: { name: string; coins: number; icon?: string }; sender: { displayName: string; level?: number }; targetSeatIndex?: number },
+    @MessageBody() data: { roomId: string },
   ) {
-    const { roomId, gift, sender, targetSeatIndex } = data;
-    if (!roomId || !gift) return;
+    const roomId = data?.roomId;
+    if (!roomId) return;
 
-    const diamondsAwarded = Math.floor((gift.coins || 10) * 0.42);
-
-    const giftPayload = {
-      id: `gift_${Date.now()}`,
-      name: gift.name,
-      coins: gift.coins,
-      diamondsAwarded,
-      targetSeatIndex: targetSeatIndex !== undefined ? targetSeatIndex : null,
-      sender: {
-        id: client.id,
-        displayName: sender?.displayName || 'Supporter',
-        level: sender?.level || 12,
-      },
-      timestamp: Date.now(),
-    };
-
-    // Broadcast animated gift to every participant in the room
-    this.server.to(roomId).emit('gift:broadcast', giftPayload);
-
-    // If active PK Battle, increment score
-    this.recordPKScore(roomId, 'host1', diamondsAwarded);
-
-    // Broadcast instant telemetry update to Admin Dashboard WebSocket
-    this.broadcastAdminTelemetry('admin:metrics_update', {
-      type: 'GIFT_TRANSACTION',
-      giftName: gift.name,
-      sender: giftPayload.sender.displayName,
-      coinsDebited: gift.coins,
-      diamondsCredited: diamondsAwarded,
+    const viewer = this.roomViewers.get(roomId)?.get(client.id);
+    this.server.to(roomId).emit('reaction:heart', {
       roomId,
+      userId: viewer?.userId || this.getAuthenticatedUserId(client) || null,
+      displayName: viewer?.displayName || 'Viewer',
+      avatarUrl: viewer?.avatarUrl || null,
       timestamp: Date.now(),
     });
-
-    // Broadcast into chat
-    const targetLabel = targetSeatIndex !== undefined && targetSeatIndex !== null
-      ? ` to Seat #${targetSeatIndex}`
-      : '';
-
-    this.server.to(roomId).emit('chat:broadcast', {
-      id: `msg_gift_${Date.now()}`,
-      sender: giftPayload.sender,
-      text: `sent luxury gift [${gift.name}]${targetLabel}! 🎉`,
-      isGift: true,
-      timestamp: Date.now(),
-    });
-
-    this.logger.log(`🎁 Gift ${gift.name} (${gift.coins} coins) sent in room ${roomId}`);
   }
 
   // ==========================================
@@ -980,6 +1336,8 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
             customId: v.customId || null,
             level: v.level || 1,
             frameUrl: v.frameUrl,
+            isVerified: v.isVerified === true,
+            verifiedLabel: v.verifiedLabel || null,
           });
         }
         // VIP members sorted to top of viewer list
@@ -1252,14 +1610,10 @@ export class SignalingGateway implements OnGatewayConnection, OnGatewayDisconnec
     }
   }
 
-  @SubscribeMessage('pk:gift')
-  handlePKGift(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { roomId: string; targetHost: 'host1' | 'host2'; score: number },
-  ) {
-    const { roomId, targetHost, score } = data;
-    this.recordPKScore(roomId, targetHost, score);
-  }
+  /**
+   * PK scores are only ever increased by the server through `recordPKScore()`
+   * after a real gift transaction - clients cannot award themselves points.
+   */
 
   recordPKScore(roomId: string, targetHost: 'host1' | 'host2', score: number) {
     const battle = this.pkBattles.get(roomId);

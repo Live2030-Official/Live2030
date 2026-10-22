@@ -7,6 +7,7 @@ import '../theme/app_theme.dart';
 import '../services/agora_service.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/gift_catalog.dart';
 import '../services/level_service.dart';
 import '../widgets/user_avatar_with_frame.dart';
 import '../widgets/topup_choice_dialog.dart';
@@ -64,6 +65,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
   int _totalDiamonds = 0;
   Map<String, dynamic>? _currentGiftAnimation;
   Map<String, dynamic>? _activeVipEntrance;
+  List<Map<String, dynamic>> _giftCatalog = GiftCatalog.fallbackDecorated;
 
   // ⚔️ 1v1 PK Battle State
   bool _isPKActive = false;
@@ -290,6 +292,9 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
 
     _initLiveRoom();
     _initWebSocket();
+    GiftCatalog.load().then((gifts) {
+      if (mounted && gifts.isNotEmpty) setState(() => _giftCatalog = gifts);
+    });
   }
 
   Future<void> _initLiveRoom() async {
@@ -374,6 +379,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
         socketUrl,
         io.OptionBuilder()
             .setTransports(['websocket', 'polling'])
+            .setAuth({'token': AuthService().accessToken ?? ''})
             .enableAutoConnect()
             .enableReconnection()
             .setReconnectionDelay(1500)
@@ -987,7 +993,9 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
                                 reason: reasonController.text.trim().isNotEmpty
                                     ? reasonController.text.trim()
                                     : 'Flagged by audience viewer',
-                                reportedUserId: widget.isHost ? 'me' : 'host_streamer',
+                                reportedUserId: widget.isHost
+                                    ? AuthService().currentUser?.id
+                                    : null,
                               );
                               setModalState(() => isSubmitting = false);
                               if (ctx.mounted) Navigator.pop(ctx);
@@ -1028,24 +1036,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) {
-        final gifts = [
-          // Standard Gifts (All Users)
-          {'id': 'g1', 'name': 'Rose 🌹', 'coins': 10, 'minVip': 0, 'icon': Icons.local_florist, 'color': Colors.redAccent},
-          {'id': 'g2', 'name': 'Diamond Ring 💍', 'coins': 100, 'minVip': 0, 'icon': Icons.diamond, 'color': Colors.cyanAccent},
-          {'id': 'g3', 'name': 'Sports Car 🏎️', 'coins': 1000, 'minVip': 0, 'icon': Icons.directions_car, 'color': Colors.amberAccent},
-          {'id': 'g4', 'name': 'Luxury Yacht 🛥️', 'coins': 5000, 'minVip': 0, 'icon': Icons.directions_boat, 'color': Colors.tealAccent},
-          {'id': 'g5', 'name': 'Golden Dragon 🐉', 'coins': 10000, 'minVip': 0, 'icon': Icons.whatshot, 'color': Colors.orangeAccent},
-          {'id': 'g6', 'name': 'Space Rocket 🚀', 'coins': 50000, 'minVip': 0, 'icon': Icons.rocket_launch, 'color': Colors.purpleAccent},
-          // VIP 1-8 Exclusives
-          {'id': 'g_vip1_yacht', 'name': 'Neon Cruiser 🚤', 'coins': 500, 'minVip': 1, 'icon': Icons.sailing, 'color': const Color(0xFF06B6D4)},
-          {'id': 'g_vip2_sports_car', 'name': 'Cyber Phantom 🏎️', 'coins': 1500, 'minVip': 2, 'icon': Icons.electric_bolt, 'color': const Color(0xFF8B5CF6)},
-          {'id': 'g_vip3_helicopter', 'name': 'Royal Airship 🛸', 'coins': 3500, 'minVip': 3, 'icon': Icons.flight, 'color': const Color(0xFFEC4899)},
-          {'id': 'g_vip4_mansion', 'name': 'Palace of Light 🏰', 'coins': 8000, 'minVip': 4, 'icon': Icons.castle, 'color': const Color(0xFFF59E0B)},
-          {'id': 'g_vip5_dragon', 'name': 'Celestial Dragon 🐲', 'coins': 15000, 'minVip': 5, 'icon': Icons.local_fire_department, 'color': const Color(0xFFEF4444)},
-          {'id': 'g_vip6_phoenix', 'name': 'Phoenix Sovereign 🦅', 'coins': 30000, 'minVip': 6, 'icon': Icons.auto_awesome, 'color': const Color(0xFFF97316)},
-          {'id': 'g_vip7_galaxy', 'name': 'Nebula Galaxy 🌌', 'coins': 60000, 'minVip': 7, 'icon': Icons.brightness_high, 'color': const Color(0xFFA855F7)},
-          {'id': 'g_vip8_sovereign', 'name': 'Throne of Eternity 👑', 'coins': 120000, 'minVip': 8, 'icon': Icons.workspace_premium, 'color': const Color(0xFFFFD700)},
-        ];
+        final gifts = _giftCatalog;
 
         final userCoins = AuthService().currentUser?.coins ?? 0;
         final hostDisplayName = _pkBattle?['host1']?['displayName'] ?? widget.hostName;
@@ -1483,6 +1474,8 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
                                   leading: UserAvatarWithFrame(
                                     avatarUrl: vAvatar.isNotEmpty ? vAvatar : null,
                                     level: vLevel,
+                                    isVerified: viewer['isVerified'] == true,
+                                    verifiedLabel: viewer['verifiedLabel']?.toString(),
                                     size: 40,
                                     showBadge: false,
                                   ),
@@ -2508,7 +2501,7 @@ class _LiveRoomScreenState extends State<LiveRoomScreen> with TickerProviderStat
                                                   const Spacer(),
                                                   Switch(
                                                     value: _agoraService.isBeautyEnabled,
-                                                    activeColor: const Color(0xFFEC4899),
+                                                    activeThumbColor: const Color(0xFFEC4899),
                                                     onChanged: (v) async {
                                                       await _agoraService.setBeautyEffect(enabled: v);
                                                       setSheet(() {});

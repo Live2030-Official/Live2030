@@ -344,8 +344,37 @@ export class AgenciesService implements OnModuleInit {
       throw new UnauthorizedException('No talent agency found matching code or email');
     }
 
-    const expectedPassword = agency.password || 'Agency@2026';
-    if (password.trim() !== String(expectedPassword).trim()) {
+    // Prefer the bcrypt hash. Only fall back to the legacy plaintext credential
+    // for agencies that have not been migrated yet, and migrate on success.
+    const supplied = password.trim();
+    const wallet = await this.prisma.agencyWallet
+      .findUnique({ where: { agencyId: agency.id } })
+      .catch(() => null);
+
+    let passwordValid = false;
+    if (wallet?.passwordHash) {
+      passwordValid = await bcrypt.compare(supplied, wallet.passwordHash);
+    } else {
+      const legacyPassword = String(agency.password || 'Agency@2026').trim();
+      passwordValid = supplied === legacyPassword;
+      if (passwordValid) {
+        const passwordHash = await bcrypt.hash(supplied, 10);
+        await this.prisma.agencyWallet
+          .upsert({
+            where: { agencyId: agency.id },
+            create: { agencyId: agency.id, passwordHash },
+            update: { passwordHash },
+          })
+          .catch(() => null);
+        const creds = await this.loadCredentials();
+        if (creds[agency.id]?.password) {
+          delete creds[agency.id].password;
+          await this.saveCredentials(creds);
+        }
+      }
+    }
+
+    if (!passwordValid) {
       throw new UnauthorizedException('Incorrect agency password. Please check your credentials.');
     }
 

@@ -844,7 +844,7 @@ export class LevelsService implements OnModuleInit {
     try {
       const status = await this.getUserVipStatus(userId);
       if (!status.isVip) return false;
-      return status.activeFeatures?.[featureKey] !== false;
+      return status.activeFeatures?.[featureKey] === true;
     } catch {
       return false;
     }
@@ -1158,6 +1158,33 @@ export class LevelsService implements OnModuleInit {
     const status = await this.getUserVipStatus(userId);
     if (!status.isVip) {
       throw new ForbiddenException('VIP Member status required to configure VIP privacy settings.');
+    }
+
+    // Each privacy toggle is a VIP benefit: reject toggles the user's tier
+    // does not include (or that an admin disabled for that tier).
+    const toggleKeys = [
+      'rejectStrangerMessages',
+      'disableFollowing',
+      'hideLocationInRooms',
+      'anonymousInGames',
+      'invisibleOnlineStatus',
+      'hideCountry',
+      'mysteryMode',
+      'hideFromVisitors',
+      'hideRoomFromTrending',
+      'stealthRoomAccess',
+    ] as const;
+    const features = (status.activeFeatures || {}) as Record<string, boolean | undefined>;
+    const denied = toggleKeys.filter(
+      (key) => (dto as any)[key] !== undefined && features[key] !== true,
+    );
+    if (denied.length > 0) {
+      throw new ForbiddenException(
+        `Your VIP tier does not include: ${denied.join(', ')}.`,
+      );
+    }
+    if (dto.customNameColor !== undefined && features.customNameColor !== true) {
+      throw new ForbiddenException('Your VIP tier does not include a custom name color.');
     }
 
     const currentSettings = status.vipSettings || {};
@@ -1664,6 +1691,9 @@ export class LevelsService implements OnModuleInit {
    * View Profile Visitors (Requires VIP 1+)
    */
   async getProfileVisitors(profileId: string, requestingUserId: string) {
+    if (profileId !== requestingUserId) {
+      throw new ForbiddenException('You can only view visitors on your own profile.');
+    }
     const reqStatus = await this.getUserVipStatus(requestingUserId);
     if (reqStatus.vipLevel < 1) {
       throw new ForbiddenException('VIP 1 status required to view your profile visitors.');
@@ -1745,7 +1775,12 @@ export class LevelsService implements OnModuleInit {
           username: cleanId,
         },
       });
-    } catch {}
+    } catch (e: any) {
+      if (e?.code === 'P2002') {
+        throw new BadRequestException(`Custom ID '@${cleanId}' is already taken by another user.`);
+      }
+      throw new BadRequestException('Custom ID could not be saved. Please try again.');
+    }
 
     const memUser = UsersService.usersMap.get(userId);
     if (memUser) {

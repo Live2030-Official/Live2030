@@ -61,6 +61,8 @@ export class ModerationService {
               username: true,
               displayName: true,
               avatarUrl: true,
+              isVerified: true,
+              verifiedLabel: true,
               isBanned: true,
               warningCount: true,
             },
@@ -207,7 +209,7 @@ export class ModerationService {
     const users = ids.length
       ? await this.prisma.user.findMany({
           where: { id: { in: ids } },
-          select: { id: true, username: true, displayName: true, avatarUrl: true, level: true, vipLevel: true },
+          select: { id: true, username: true, displayName: true, avatarUrl: true, level: true, vipLevel: true, isVerified: true, verifiedLabel: true },
         })
       : [];
     const map = new Map(users.map((u) => [u.id, u]));

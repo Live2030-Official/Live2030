@@ -7,10 +7,14 @@ import {
   Body,
   ParseIntPipe,
   Query,
+  Request,
+  UseGuards,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { LevelsService } from './levels.service';
-import { RequirePermissions } from '../auth/permissions.decorator';
+import { RequirePermissions, Public } from '../auth/permissions.decorator';
+import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 import {
   UpdateLevelConfigDto,
   AwardXpDto,
@@ -27,6 +31,14 @@ import {
 export class LevelsController {
   constructor(private readonly levelsService: LevelsService) {}
 
+  private assertSelfOrStaff(req: any, targetUserId: string) {
+    const isStaff = req.user?.isStaff === true || ['SUPER_ADMIN', 'AGENCY_ADMIN'].includes(req.user?.role);
+    if (!isStaff && targetUserId !== req.user?.id) {
+      throw new ForbiddenException('You can only manage your own account settings.');
+    }
+  }
+
+  @Public()
   @Get()
   @ApiOperation({ summary: 'Get all 8 independent VIP level configurations ($500 to $15,000)' })
   @ApiResponse({ status: 200, description: 'List of all 8 VIP stages' })
@@ -34,12 +46,14 @@ export class LevelsController {
     return this.levelsService.getLevels();
   }
 
+  @Public()
   @Get('configs')
   @ApiOperation({ summary: 'Alias: Get all VIP configurations' })
   async getVipConfigs() {
     return this.levelsService.getLevels();
   }
 
+  @Public()
   @Get('features')
   @ApiOperation({ summary: 'Get the canonical catalog of toggleable VIP benefits grouped by category' })
   async getFeatureCatalog() {
@@ -47,11 +61,17 @@ export class LevelsController {
   }
 
   @Get('user/:userId')
+  @UseGuards(UserAuthGuard)
   @ApiOperation({ summary: 'Get user VIP status, recharge progress, unlocked perks & privacy toggles' })
-  async getUserVipStatus(@Param('userId') userId: string) {
+  async getUserVipStatus(@Param('userId') userId: string, @Request() req: any) {
+    const isStaff = req.user?.isStaff === true || ['SUPER_ADMIN', 'AGENCY_ADMIN'].includes(req.user?.role);
+    if (!isStaff && userId !== req.user?.id) {
+      throw new ForbiddenException('You can only view your own VIP status.');
+    }
     return this.levelsService.getUserVipStatus(userId);
   }
 
+  @Public()
   @Get(':level')
   @ApiOperation({ summary: 'Get single VIP level configuration' })
   async getLevel(@Param('level', ParseIntPipe) level: number) {
@@ -69,20 +89,26 @@ export class LevelsController {
   }
 
   @Put('user/:userId/settings')
+  @UseGuards(UserAuthGuard)
   @ApiOperation({ summary: 'User updates personal VIP privacy toggles (Mystery mode, hide location, etc.)' })
   async updateVipSettings(
     @Param('userId') userId: string,
+    @Request() req: any,
     @Body() dto: UpdateVipSettingsDto,
   ) {
+    this.assertSelfOrStaff(req, userId);
     return this.levelsService.updateVipSettings(userId, dto);
   }
 
   @Put('user/:userId/custom-id')
+  @UseGuards(UserAuthGuard)
   @ApiOperation({ summary: 'VIP 1+ users claim a custom vanity ID' })
   async setCustomId(
     @Param('userId') userId: string,
+    @Request() req: any,
     @Body() dto: SetCustomIdDto,
   ) {
+    this.assertSelfOrStaff(req, userId);
     return this.levelsService.setCustomId(userId, dto);
   }
 
@@ -129,17 +155,20 @@ export class LevelsController {
   }
 
   @Post('visitors/visit')
+  @UseGuards(UserAuthGuard)
   @ApiOperation({ summary: 'Record profile visit with mystery / ghost mode check' })
-  async recordProfileVisit(@Body() dto: RecordVisitDto) {
-    return this.levelsService.recordProfileVisit(dto);
+  async recordProfileVisit(@Request() req: any, @Body() dto: RecordVisitDto) {
+    return this.levelsService.recordProfileVisit({ ...dto, visitorId: req.user?.id || dto.visitorId });
   }
 
   @Get('visitors/:profileId')
+  @UseGuards(UserAuthGuard)
   @ApiOperation({ summary: 'Get profile visitors (VIP 1+ required)' })
   async getProfileVisitors(
     @Param('profileId') profileId: string,
+    @Request() req: any,
     @Query('requestingUserId') requestingUserId: string,
   ) {
-    return this.levelsService.getProfileVisitors(profileId, requestingUserId);
+    return this.levelsService.getProfileVisitors(profileId, req.user?.id || requestingUserId);
   }
 }

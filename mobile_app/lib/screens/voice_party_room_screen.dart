@@ -6,6 +6,7 @@ import '../theme/app_theme.dart';
 import '../services/agora_service.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/gift_catalog.dart';
 import '../widgets/user_avatar_with_frame.dart';
 import '../widgets/topup_choice_dialog.dart';
 import '../localization/app_locale_service.dart';
@@ -41,6 +42,7 @@ class _VoicePartyRoomScreenState extends State<VoicePartyRoomScreen> with Ticker
   bool _isJoined = false;
   int _totalDiamonds = 0;
   Map<String, dynamic>? _currentGiftAnimation;
+  List<Map<String, dynamic>> _giftCatalog = GiftCatalog.fallbackDecorated;
   int? _mySeatIndex;
   bool _isMyMicMuted = false;
 
@@ -129,6 +131,9 @@ class _VoicePartyRoomScreenState extends State<VoicePartyRoomScreen> with Ticker
     }
 
     _initVoiceRoom();
+    GiftCatalog.load().then((gifts) {
+      if (mounted && gifts.isNotEmpty) setState(() => _giftCatalog = gifts);
+    });
     _initWebSocket();
   }
 
@@ -193,6 +198,7 @@ class _VoicePartyRoomScreenState extends State<VoicePartyRoomScreen> with Ticker
         socketUrl,
         io.OptionBuilder()
             .setTransports(['websocket', 'polling'])
+            .setAuth({'token': AuthService().accessToken ?? ''})
             .enableAutoConnect()
             .enableReconnection()
             .setReconnectionDelay(1500)
@@ -333,14 +339,17 @@ class _VoicePartyRoomScreenState extends State<VoicePartyRoomScreen> with Ticker
         if (mounted && data != null) {
           final gameData = Map<String, dynamic>.from(data);
           final pName = gameData['playerName'] ?? 'Player';
-          final gName = gameData['gameName'] ?? 'Mini-Game';
-          final payout = gameData['payoutCoins'] ?? 0;
-          final mult = gameData['multiplier'] ?? 1.0;
+          final gName = gameData['gameTitle'] ?? gameData['gameName'] ?? 'Mini-Game';
+          final payout = (gameData['winAmount'] ?? gameData['winningsCoins'] ?? 0) as num;
+          final mult = (gameData['multiplier'] ?? 0) as num;
+          final isWin = gameData['isWin'] == true && payout > 0;
 
           setState(() {
             _messages.add({
               'isSystem': true,
-              'text': '🎰 $pName won $payout 🪙 on $gName (${mult}x)! 🎉',
+              'text': isWin
+                  ? '🎰 $pName won ${payout.toInt()} 🪙 on $gName (${mult}x)! 🎉'
+                  : '🎲 $pName played $gName and did not win this round.',
               'sender': {'displayName': 'Casino Dealer'},
             });
           });
@@ -672,24 +681,7 @@ class _VoicePartyRoomScreenState extends State<VoicePartyRoomScreen> with Ticker
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) {
-        final gifts = [
-          // Standard Gifts (All Users)
-          {'id': 'g1', 'name': 'Rose 🌹', 'coins': 10, 'minVip': 0, 'icon': Icons.local_florist, 'color': Colors.redAccent},
-          {'id': 'g2', 'name': 'Diamond Ring 💍', 'coins': 100, 'minVip': 0, 'icon': Icons.diamond, 'color': Colors.cyanAccent},
-          {'id': 'g3', 'name': 'Sports Car 🏎️', 'coins': 1000, 'minVip': 0, 'icon': Icons.directions_car, 'color': Colors.amberAccent},
-          {'id': 'g4', 'name': 'Luxury Yacht 🛥️', 'coins': 5000, 'minVip': 0, 'icon': Icons.directions_boat, 'color': Colors.tealAccent},
-          {'id': 'g5', 'name': 'Golden Dragon 🐉', 'coins': 10000, 'minVip': 0, 'icon': Icons.whatshot, 'color': Colors.orangeAccent},
-          {'id': 'g6', 'name': 'Space Rocket 🚀', 'coins': 50000, 'minVip': 0, 'icon': Icons.rocket_launch, 'color': Colors.purpleAccent},
-          // VIP 1-8 Exclusives
-          {'id': 'g_vip1_yacht', 'name': 'Neon Cruiser 🚤', 'coins': 500, 'minVip': 1, 'icon': Icons.sailing, 'color': const Color(0xFF06B6D4)},
-          {'id': 'g_vip2_sports_car', 'name': 'Cyber Phantom 🏎️', 'coins': 1500, 'minVip': 2, 'icon': Icons.electric_bolt, 'color': const Color(0xFF8B5CF6)},
-          {'id': 'g_vip3_helicopter', 'name': 'Royal Airship 🛸', 'coins': 3500, 'minVip': 3, 'icon': Icons.flight, 'color': const Color(0xFFEC4899)},
-          {'id': 'g_vip4_mansion', 'name': 'Palace of Light 🏰', 'coins': 8000, 'minVip': 4, 'icon': Icons.castle, 'color': const Color(0xFFF59E0B)},
-          {'id': 'g_vip5_dragon', 'name': 'Celestial Dragon 🐲', 'coins': 15000, 'minVip': 5, 'icon': Icons.local_fire_department, 'color': const Color(0xFFEF4444)},
-          {'id': 'g_vip6_phoenix', 'name': 'Phoenix Sovereign 🦅', 'coins': 30000, 'minVip': 6, 'icon': Icons.auto_awesome, 'color': const Color(0xFFF97316)},
-          {'id': 'g_vip7_galaxy', 'name': 'Nebula Galaxy 🌌', 'coins': 60000, 'minVip': 7, 'icon': Icons.brightness_high, 'color': const Color(0xFFA855F7)},
-          {'id': 'g_vip8_sovereign', 'name': 'Throne of Eternity 👑', 'coins': 120000, 'minVip': 8, 'icon': Icons.workspace_premium, 'color': const Color(0xFFFFD700)},
-        ];
+        final gifts = _giftCatalog;
 
         final userCoins = AuthService().currentUser?.coins ?? 0;
 
@@ -1591,6 +1583,8 @@ class _VoicePartyRoomScreenState extends State<VoicePartyRoomScreen> with Ticker
                 UserAvatarWithFrame(
                   avatarUrl: user['avatarUrl'],
                   level: (user['level'] ?? (isHostSeat ? 5 : 1)) as int,
+                  isVerified: user['isVerified'] == true,
+                  verifiedLabel: user['verifiedLabel']?.toString(),
                   size: 48,
                   showBadge: true,
                 )

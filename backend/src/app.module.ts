@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { StaffModule } from './modules/staff/staff.module';
@@ -26,6 +28,14 @@ import { ModerationModule } from './modules/moderation/moderation.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    // Global request throttling protects the API from brute-force and scraping.
+    ThrottlerModule.forRoot([
+      {
+        name: 'default',
+        ttl: 60_000,
+        limit: 300,
+      },
+    ]),
     PrismaModule,
     AuthModule,
     StaffModule,
@@ -45,6 +55,12 @@ import { ModerationModule } from './modules/moderation/moderation.module';
     GamesModule,
     CoinPackagesModule,
     ModerationModule,
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}

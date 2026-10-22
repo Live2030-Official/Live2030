@@ -103,6 +103,8 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
         hostInfo.vipLevel = dbHost.vipLevel ?? dto.hostVipLevel ?? 0;
         hostInfo.customId = dbHost.customId || dto.hostCustomId || null;
         hostInfo.customNameColor = dbHost.customNameColor || null;
+        hostInfo.isVerified = (dbHost as any).isVerified === true;
+        hostInfo.verifiedLabel = (dbHost as any).verifiedLabel || null;
       }
     } catch {}
 
@@ -167,6 +169,7 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
       hostAvatarUrl: hostInfo.avatarUrl,
       hostCustomId: hostInfo.customId,
       hostVipLevel: hostInfo.vipLevel,
+      hostIsVerified: hostInfo.isVerified === true,
       title,
       coverUrl,
       agoraChannelName,
@@ -244,6 +247,8 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
                 username: true,
                 displayName: true,
                 avatarUrl: true,
+                isVerified: true,
+                verifiedLabel: true,
                 level: true,
                 vipLevel: true,
                 customId: true,
@@ -263,6 +268,7 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
             hostAvatarUrl: dbRoom.host?.avatarUrl,
             hostCustomId: dbRoom.host?.customId,
             hostVipLevel: dbRoom.host?.vipLevel || 0,
+            hostIsVerified: (dbRoom.host as any)?.isVerified === true,
             title: dbRoom.title,
             coverUrl: dbRoom.coverUrl,
             agoraChannelName: dbRoom.agoraChannelName,
@@ -303,6 +309,16 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
 
     if (room && room.status === 'LIVE') {
       room.currentViewers = (room.currentViewers || 0) + 1;
+      // Track the peak concurrent audience so the end-of-stream summary is accurate.
+      if ((room.currentViewers || 0) > (room.peakViewers || 0)) {
+        room.peakViewers = room.currentViewers;
+        try {
+          await (this.prisma.liveRoom as any).updateMany({
+            where: { id: room.id },
+            data: { peakViewers: room.currentViewers },
+          });
+        } catch {}
+      }
       return { room, agora: agoraAuth };
     }
 
@@ -357,6 +373,15 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
     const actualDbId = targetRoom?.id || roomId;
     const channelName = targetRoom?.agoraChannelName || (roomId.startsWith('live_') ? roomId : undefined);
     const resolvedHostId = targetRoom?.hostId || hostId;
+
+    // Only the room host (or an administrator kill-switch) may terminate a stream.
+    if (
+      resolvedHostId !== 'admin' &&
+      targetRoom?.hostId &&
+      resolvedHostId !== targetRoom.hostId
+    ) {
+      throw new ForbiddenException('Only the room host can end this broadcast.');
+    }
 
     // 2. Remove from in-memory map
     RoomsService.liveRoomsMap.delete(actualDbId);
@@ -497,6 +522,8 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
               username: true,
               displayName: true,
               avatarUrl: true,
+              isVerified: true,
+              verifiedLabel: true,
               level: true,
               vipLevel: true,
               customId: true,
@@ -531,6 +558,7 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
           hostAvatarUrl: resolvedAvatar,
           hostCustomId: r.host?.customId || existing?.hostCustomId,
           hostVipLevel: r.host?.vipLevel || existing?.hostVipLevel || 0,
+          hostIsVerified: (r.host as any)?.isVerified === true || existing?.hostIsVerified === true,
           currentViewers: existing?.currentViewers || r.currentViewers || 1,
           totalDiamondsEarned: existing?.totalDiamondsEarned || 0,
           status: 'LIVE',
@@ -545,6 +573,8 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
             vipLevel: r.host?.vipLevel || existing?.host?.vipLevel || 0,
             customId: r.host?.customId || existing?.host?.customId,
             customNameColor: r.host?.customNameColor || existing?.host?.customNameColor,
+            isVerified: (r.host as any)?.isVerified === true || existing?.host?.isVerified === true,
+            verifiedLabel: (r.host as any)?.verifiedLabel || existing?.host?.verifiedLabel || null,
           },
         });
       }
@@ -577,7 +607,7 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
    * Audience viewer leaves a room: decrement the live viewer count and
    * persist it so discovery "popular" sorting stays accurate.
    */
-  async leaveRoom(roomId: string) {
+  async leaveRoom(roomId: string, _userId?: string) {
     let room = RoomsService.liveRoomsMap.get(roomId);
     if (!room) {
       for (const r of RoomsService.liveRoomsMap.values()) {
@@ -617,7 +647,7 @@ export class RoomsService implements OnModuleInit, OnModuleDestroy {
     const users = ids.length
       ? await this.prisma.user.findMany({
           where: { id: { in: ids } },
-          select: { id: true, username: true, displayName: true, avatarUrl: true, level: true, vipLevel: true },
+          select: { id: true, username: true, displayName: true, avatarUrl: true, level: true, vipLevel: true, isVerified: true, verifiedLabel: true },
         })
       : [];
     return { hostId: room.hostId, moderators: users };

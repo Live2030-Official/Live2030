@@ -2,6 +2,7 @@ import { Controller, Post, Get, Delete, Body, Param, Query, UseGuards, Request, 
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { RoomsService } from './rooms.service';
+import { Public } from '../auth/permissions.decorator';
 import { StartRoomDto, JoinRoomDto } from './dto/room.dto';
 import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 
@@ -10,6 +11,7 @@ import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 export class RoomsController {
   constructor(private readonly roomsService: RoomsService) {}
 
+  @Public()
   @Get('discovery')
   @ApiOperation({ summary: 'Get active live streams feed for mobile discovery page (supports category/language/country filters)' })
   @ApiResponse({ status: 200, description: 'Filtered list of active rooms' })
@@ -27,25 +29,27 @@ export class RoomsController {
   @ApiOperation({ summary: 'Host starts a live stream & receives Agora Publisher RTC Token' })
   @ApiResponse({ status: 201, description: 'Room created with Agora Publisher Token' })
   async startRoom(@Request() req: any, @Body() dto: StartRoomDto) {
-    const hostId = dto.hostId || req.user?.id || `host_${Date.now()}`;
+    const hostId = req.user?.id || dto.hostId;
     return this.roomsService.startRoom(hostId, dto);
   }
 
   @Post('join')
+  @UseGuards(UserAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Audience viewer joins a room & receives Agora Subscriber RTC Token' })
   @ApiResponse({ status: 200, description: 'Agora Subscriber Token granted' })
   async joinRoom(@Request() req: any, @Body() dto: JoinRoomDto) {
-    const userId = dto.userId || req.user?.id || `viewer_${Date.now()}`;
+    const userId = req.user?.id || dto.userId;
     const effectiveRoomId = (dto.roomId && dto.roomId.trim().length > 0) ? dto.roomId.trim() : (dto.channelName || `live_${Date.now()}`);
     return this.roomsService.joinRoom(userId, effectiveRoomId, dto.channelName, dto.roomPin);
   }
 
   @Post(':id/leave')
+  @UseGuards(UserAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Audience viewer leaves a room (decrements live viewer count)' })
-  async leaveRoom(@Param('id') roomId: string) {
-    return this.roomsService.leaveRoom(roomId);
+  async leaveRoom(@Request() req: any, @Param('id') roomId: string) {
+    return this.roomsService.leaveRoom(roomId, req.user?.id);
   }
 
   @Post(':id/end')
@@ -57,6 +61,7 @@ export class RoomsController {
   }
 
   @Get(':id/moderators')
+  @UseGuards(UserAuthGuard)
   @ApiOperation({ summary: 'List room host and assigned moderators' })
   async listModerators(@Param('id') roomId: string) {
     return this.roomsService.listModerators(roomId);
@@ -72,7 +77,7 @@ export class RoomsController {
     @Body() body: { userId: string; hostId?: string },
     @Query('hostId') hostId?: string,
   ) {
-    const requester = req.user?.id || body.hostId || hostId || '';
+    const requester = req.user?.id || '';
     return this.roomsService.addModerator(roomId, requester, body.userId);
   }
 
@@ -85,7 +90,7 @@ export class RoomsController {
     @Param('userId') userId: string,
     @Query('hostId') hostId?: string,
   ) {
-    const requester = req.user?.id || hostId || '';
+    const requester = req.user?.id || '';
     return this.roomsService.removeModerator(roomId, requester, userId);
   }
 }

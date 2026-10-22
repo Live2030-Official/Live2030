@@ -1,5 +1,6 @@
 import { Injectable, Logger, BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { sarToUsd } from '../../common/pricing.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { SignalingGateway } from '../signaling/signaling.gateway';
@@ -37,9 +38,6 @@ export interface PaymentOrderRecord {
   createdAt: string;
   updatedAt: string;
 }
-
-/** 1 USD = 3.75 SAR (matches CoinPackagesService.USD_TO_SAR) */
-const USD_TO_SAR = 3.75;
 
 @Injectable()
 export class PaymentsService {
@@ -113,7 +111,7 @@ export class PaymentsService {
    * Simulator mode: no real RsomPay key configured (or RSOMPAY_SIMULATE=true).
    * Only ever active in sandbox/dev — never when a real API key is set.
    */
-  private isSimulatorMode(): boolean {
+  isSimulatorMode(): boolean {
     const simulateFlag = (this.configService.get<string>('RSOMPAY_SIMULATE') || 'false').toLowerCase() === 'true';
     return simulateFlag || (this.getEnvironment() === 'sandbox' && !this.getApiKeyConfigured());
   }
@@ -162,7 +160,7 @@ export class PaymentsService {
     return { base: `${isLocal ? 'http' : 'https'}://${host}`, isLocal };
   }
 
-  private getApiKey(): string {
+  getApiKey(): string {
     const key = this.configService.get<string>('RSOMPAY_API_KEY');
     if (key && key.trim().length > 5) {
       return key.trim();
@@ -173,7 +171,7 @@ export class PaymentsService {
   /**
    * Webhook signing secret (X-Rsom-Signature)
    */
-  private getWebhookSecret(): string {
+  getWebhookSecret(): string {
     return this.configService.get<string>('RSOMPAY_WEBHOOK_SECRET') || '';
   }
 
@@ -430,7 +428,7 @@ export class PaymentsService {
     }
 
     // 7. Persist the order durably in PostgreSQL
-    const amountUSD = parseFloat((amountSAR / USD_TO_SAR).toFixed(4));
+    const amountUSD = sarToUsd(amountSAR);
     try {
       await (this.prisma as any).paymentOrder.create({
         data: {
@@ -627,7 +625,7 @@ export class PaymentsService {
     }
 
     const shippedCoins = order.coins;
-    const amountUSD = parseFloat((order.amountSAR / USD_TO_SAR).toFixed(4));
+    const amountUSD = sarToUsd(order.amountSAR);
     const idempotencyKey = `PAYMENT:${orderId}`;
 
     // Atomic credit: wallet increment + COIN_PURCHASE ledger + order PAID.
@@ -740,7 +738,14 @@ export class PaymentsService {
     const timestamp = headers['x-rsom-timestamp'] || headers['X-Rsom-Timestamp'];
     const secret = this.getWebhookSecret();
 
-    // 1. Signature Verification (if secret configured)
+    // 1. Signature Verification (fail-secure: required outside simulator mode)
+    if (!secret || secret.trim().length === 0) {
+      if (!this.isSimulatorMode()) {
+        this.logger.error('Webhook rejected: RSOMPAY_WEBHOOK_SECRET is not configured.');
+        throw new UnauthorizedException('Webhook verification is not configured');
+      }
+      this.logger.warn('Webhook accepted WITHOUT signature verification (sandbox simulator mode).');
+    }
     if (secret && secret.trim().length > 0) {
       if (!signature || !timestamp) {
         this.logger.warn('Webhook rejected: Missing X-Rsom-Signature or X-Rsom-Timestamp');
@@ -822,6 +827,47 @@ export class PaymentsService {
   }
 
   /**
+   * Wallet / coin transaction history for the signed-in user.
+   * Includes gifts sent & received, coin purchases, withdrawals and payouts.
+   */
+  async getUserTransactions(userId: string, limit = 100) {
+    const take = Math.min(Math.max(Number(limit) || 100, 1), 200);
+    try {
+      const rows = await (this.prisma as any).transactionLedger.findMany({
+        where: {
+          OR: [{ senderId: userId }, { recipientId: userId }],
+        },
+        orderBy: { createdAt: 'desc' },
+        take,
+        include: {
+          sender: { select: { id: true, displayName: true, username: true, avatarUrl: true } },
+          recipient: { select: { id: true, displayName: true, username: true, avatarUrl: true } },
+        },
+      });
+      return rows.map((row: any) => ({
+        id: row.id,
+        type: row.type,
+        direction:
+          row.recipientId === userId && row.senderId !== userId
+            ? 'IN'
+            : row.senderId === userId
+              ? 'OUT'
+              : 'INFO',
+        coinsDebited: row.coinsDebited || 0,
+        diamondsCredited: row.diamondsCredited || 0,
+        amountUSD: Number(row.amountUSD || 0),
+        notes: row.notes || null,
+        giftId: row.giftId || null,
+        roomId: row.roomId || null,
+        counterpart: row.senderId === userId ? row.recipient : row.sender,
+        createdAt: row.createdAt,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Admin: list recent payment orders for the financial dashboard.
    */
   async getAdminPaymentOrders(limit = 200, status?: string) {
@@ -843,7 +889,7 @@ export class PaymentsService {
           pending: orders.filter((o: any) => o.status === 'PENDING').length,
           failed: orders.filter((o: any) => o.status === 'FAILED').length,
           grossRevenueSAR: parseFloat(totalSAR.toFixed(2)),
-          grossRevenueUSD: parseFloat((totalSAR / USD_TO_SAR).toFixed(2)),
+          grossRevenueUSD: parseFloat(sarToUsd(totalSAR).toFixed(2)),
           coinsSold: paid.reduce((s: number, o: any) => s + (o.coins || 0), 0),
         },
       };

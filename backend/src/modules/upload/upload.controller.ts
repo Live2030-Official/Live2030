@@ -13,6 +13,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 import { RequirePermissions } from '../auth/permissions.decorator';
+import { verifyUploadedFile } from './file-signature';
 
 const uploadDir = join(process.cwd(), 'uploads', 'avatars');
 if (!existsSync(uploadDir)) {
@@ -65,13 +66,14 @@ export class UploadController {
     if (!file) {
       throw new BadRequestException('No image file uploaded');
     }
-    const relativeUrl = `/uploads/avatars/${file.filename}`;
+    const verified = verifyUploadedFile(file, ['image']);
+    const relativeUrl = `/uploads/avatars/${verified.filename}`;
     return {
       success: true,
       url: relativeUrl,
-      filename: file.filename,
+      filename: verified.filename,
       size: file.size,
-      mimetype: file.mimetype,
+      mimetype: verified.mime,
     };
   }
 
@@ -122,15 +124,16 @@ export class UploadController {
     if (!file) {
       throw new BadRequestException('No photo or video file uploaded');
     }
-    const isVideo = file.mimetype.startsWith('video/') || file.originalname.match(/\.(mp4|mov|webm|m4v|mkv)$/i) !== null;
-    const relativeUrl = `/uploads/posts/${file.filename}`;
+    const verified = verifyUploadedFile(file, ['image', 'video']);
+    const isVideo = verified.kind === 'video';
+    const relativeUrl = `/uploads/posts/${verified.filename}`;
     let thumbnailUrl: string | null = null;
 
     if (isVideo) {
       try {
         const { execSync } = require('child_process');
         const postsUploadDir = join(process.cwd(), 'uploads', 'posts');
-        const thumbFilename = `${file.filename.replace(/\.[^.]+$/, '')}-thumb.jpg`;
+        const thumbFilename = `${verified.filename.replace(/\.[^.]+$/, '')}-thumb.jpg`;
         const thumbPath = join(postsUploadDir, thumbFilename);
         execSync(`ffmpeg -y -i "${file.path}" -ss 00:00:01 -vframes 1 -q:v 2 "${thumbPath}"`, {
           timeout: 15000,
@@ -148,10 +151,10 @@ export class UploadController {
       success: true,
       url: relativeUrl,
       thumbnailUrl,
-      filename: file.filename,
+      filename: verified.filename,
       mediaType: isVideo ? 'VIDEO' : 'PHOTO',
       size: file.size,
-      mimetype: file.mimetype,
+      mimetype: verified.mime,
     };
   }
 
@@ -210,15 +213,15 @@ export class UploadController {
     if (!file) {
       throw new BadRequestException('No file uploaded');
     }
-    const relativeUrl = `/uploads/levels/${file.filename}`;
-    const isLottie = file.originalname.endsWith('.json') || file.mimetype.includes('json');
+    const verified = verifyUploadedFile(file, ['image', 'lottie']);
+    const relativeUrl = `/uploads/levels/${verified.filename}`;
     return {
       success: true,
       url: relativeUrl,
-      filename: file.filename,
-      assetType: isLottie ? 'LOTTIE' : 'FRAME',
+      filename: verified.filename,
+      assetType: verified.kind === 'lottie' ? 'LOTTIE' : 'FRAME',
       size: file.size,
-      mimetype: file.mimetype,
+      mimetype: verified.mime,
     };
   }
 }

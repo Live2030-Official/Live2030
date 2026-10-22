@@ -3,6 +3,7 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import * as express from 'express';
+import helmet from 'helmet';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 
@@ -17,12 +18,32 @@ async function bootstrap() {
   }
   app.use('/uploads', express.static(uploadsPath));
 
-  // Enable global CORS for mobile clients and web admin
+  // Trust the reverse proxy (nginx / load balancer) so rate limiting and
+  // secure-cookie logic see the real client IP.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
+  // Standard security headers. `cross-origin` keeps uploaded media usable by
+  // the mobile app and the admin dashboard on a different origin.
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+      contentSecurityPolicy: false,
+    }),
+  );
+
+  // CORS: only the configured origins are allowed. Native mobile clients do not
+  // send an Origin header and are therefore unaffected.
+  const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000,http://localhost:3001')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
   app.enableCors({
-    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['http://localhost:3000'],
+    origin: allowedOrigins,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   });
+
+  app.enableShutdownHooks();
 
   app.use((req: any, res: any, next: any) => {
     logger.log(`📥 [HTTP] ${req.method} ${req.originalUrl}`);

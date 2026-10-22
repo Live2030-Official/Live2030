@@ -227,9 +227,14 @@ export class RecordVisitDto {
   @IsString()
   profileId: string;
 
-  @ApiProperty({ example: 'visitor-user-uuid' })
+  @ApiProperty({
+    example: 'visitor-user-uuid',
+    required: false,
+    description: 'Optional - the server always uses the authenticated user id.',
+  })
+  @IsOptional()
   @IsString()
-  visitorId: string;
+  visitorId?: string;
 }
 
 export class SetCustomIdDto {

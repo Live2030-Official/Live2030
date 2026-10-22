@@ -18,8 +18,8 @@ export class WithdrawalsService {
    * Submit a withdrawal request. Atomically HOLDs the diamonds (decrements wallet)
    * and records a WITHDRAWAL_HOLD ledger entry so funds cannot be double-spent.
    */
-  async requestWithdrawal(dto: RequestWithdrawalDto) {
-    if (!dto.userId) {
+  async requestWithdrawal(dto: RequestWithdrawalDto, userId: string) {
+    if (!userId) {
       throw new BadRequestException('userId is required.');
     }
     if (!dto.amountDiamonds || dto.amountDiamonds < this.MIN_WITHDRAWAL_DIAMONDS) {
@@ -31,12 +31,12 @@ export class WithdrawalsService {
     const amountUSD = parseFloat((dto.amountDiamonds / this.DIAMONDS_PER_USD).toFixed(2));
     const accountDetailsStr = JSON.stringify(dto.accountDetails || {});
 
-    const user = await this.prisma.user.findUnique({ where: { id: dto.userId } });
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
-      throw new NotFoundException(`User ${dto.userId} not found.`);
+      throw new NotFoundException(`User ${userId} not found.`);
     }
 
-    const wallet = await this.prisma.wallet.findUnique({ where: { userId: dto.userId } });
+    const wallet = await this.prisma.wallet.findUnique({ where: { userId: userId } });
     if (!wallet || wallet.diamonds < dto.amountDiamonds) {
       throw new BadRequestException(
         `Insufficient diamonds. Available: ${(wallet?.diamonds ?? 0).toLocaleString()} 💎, requested: ${dto.amountDiamonds.toLocaleString()} 💎.`,
@@ -46,19 +46,19 @@ export class WithdrawalsService {
     // Agency attribution if the host is bound to an agency
     let agencyId: string | null = null;
     try {
-      const binding = await this.prisma.hostBinding.findUnique({ where: { hostId: dto.userId } });
+      const binding = await this.prisma.hostBinding.findUnique({ where: { hostId: userId } });
       if (binding && binding.status === 'APPROVED') agencyId = binding.agencyId;
     } catch {}
 
     const withdrawal = await this.prisma.$transaction(async (tx) => {
       await tx.wallet.update({
-        where: { userId: dto.userId },
+        where: { userId: userId },
         data: { diamonds: { decrement: dto.amountDiamonds } },
       });
 
       const created = await tx.withdrawal.create({
         data: {
-          userId: dto.userId!,
+          userId: userId!,
           agencyId,
           amountDiamonds: dto.amountDiamonds,
           amountUSD,
@@ -71,7 +71,7 @@ export class WithdrawalsService {
       await tx.transactionLedger.create({
         data: {
           type: 'WITHDRAWAL_HOLD' as any,
-          senderId: dto.userId,
+          senderId: userId,
           agencyId: agencyId || undefined,
           diamondsCredited: 0,
           coinsDebited: 0,

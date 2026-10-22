@@ -56,6 +56,7 @@ class _DirectChatScreenState extends State<DirectChatScreen> {
         '${ApiService.baseUrl}/live',
         io.OptionBuilder()
             .setTransports(['websocket', 'polling'])
+            .setAuth({'token': AuthService().accessToken ?? ''})
             .enableAutoConnect()
             .build(),
       );
@@ -210,6 +211,154 @@ class _DirectChatScreenState extends State<DirectChatScreen> {
     }
   }
 
+  Future<void> _confirmBlock() async {
+    final targetId = widget.targetUser['id']?.toString() ?? '';
+    if (targetId.isEmpty) return;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: LiveColors.backgroundElevated,
+        title: const Text('Block user?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'They will no longer be able to message you, and you will stop seeing their content.',
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+            child: const Text('Block'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    final ok = await ApiService().blockUser(targetId);
+    if (!mounted) return;
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: LiveColors.backgroundElevated,
+          content: Text('User blocked.'),
+        ),
+      );
+      Navigator.pop(context);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Colors.redAccent,
+          content: Text('Could not block this user. Please try again.'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showReportDialog() async {
+    final targetId = widget.targetUser['id']?.toString() ?? '';
+    if (targetId.isEmpty) return;
+    final reasonController = TextEditingController();
+    String category = 'HARASSMENT';
+    bool submitting = false;
+    const categories = {
+      'HARASSMENT': 'Harassment or bullying',
+      'NUDITY': 'Nudity or sexual content',
+      'VIOLENCE': 'Violence or threats',
+      'FRAUD': 'Scam or fraud',
+      'UNDERAGE': 'Underage user',
+      'OTHER': 'Other',
+    };
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: LiveColors.backgroundElevated,
+          title: const Text('Report user', style: TextStyle(color: Colors.white)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: category,
+                dropdownColor: LiveColors.backgroundElevated,
+                decoration: const InputDecoration(
+                  labelText: 'Reason',
+                  labelStyle: TextStyle(color: Colors.white54),
+                ),
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                items: categories.entries
+                    .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+                    .toList(),
+                onChanged: (v) {
+                  if (v != null) setDialogState(() => category = v);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: reasonController,
+                maxLines: 3,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                decoration: const InputDecoration(
+                  hintText: 'Add details (optional)',
+                  hintStyle: TextStyle(color: Colors.white38),
+                  filled: true,
+                  fillColor: LiveColors.backgroundInput,
+                  border: OutlineInputBorder(borderSide: BorderSide.none),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: submitting ? null : () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      setDialogState(() => submitting = true);
+                      final ok = await ApiService().submitReport(
+                        targetType: 'USER',
+                        targetId: targetId,
+                        category: category,
+                        reason: reasonController.text.trim().isNotEmpty
+                            ? reasonController.text.trim()
+                            : categories[category] ?? 'Reported by user',
+                        reportedUserId: targetId,
+                      );
+                      if (ctx.mounted) Navigator.pop(ctx);
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          backgroundColor: ok ? const Color(0xFF10B981) : Colors.redAccent,
+                          content: Text(
+                            ok
+                                ? 'Report submitted to the Trust & Safety team.'
+                                : 'Could not submit report. Please try again.',
+                          ),
+                        ),
+                      );
+                    },
+              style: TextButton.styleFrom(foregroundColor: LiveColors.accentPink),
+              child: submitting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('Submit'),
+            ),
+          ],
+        ),
+      ),
+    );
+    reasonController.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final targetName = widget.targetUser['displayName'] ?? widget.targetUser['username'] ?? 'User';
@@ -233,6 +382,8 @@ class _DirectChatScreenState extends State<DirectChatScreen> {
             UserAvatarWithFrame(
               avatarUrl: targetAvatar,
               vipLevel: targetVip,
+              isVerified: widget.targetUser['isVerified'] == true,
+              verifiedLabel: widget.targetUser['verifiedLabel']?.toString(),
               size: 38,
               showBadge: true,
             ),
@@ -301,6 +452,38 @@ class _DirectChatScreenState extends State<DirectChatScreen> {
             ),
           ],
         ),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Colors.white),
+            color: LiveColors.backgroundElevated,
+            onSelected: (value) {
+              if (value == 'block') _confirmBlock();
+              if (value == 'report') _showReportDialog();
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'block',
+                child: Row(
+                  children: [
+                    Icon(Icons.block_rounded, color: Colors.redAccent, size: 18),
+                    SizedBox(width: 10),
+                    Text('Block user', style: TextStyle(color: Colors.white)),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'report',
+                child: Row(
+                  children: [
+                    Icon(Icons.flag_rounded, color: Colors.amber, size: 18),
+                    SizedBox(width: 10),
+                    Text('Report user', style: TextStyle(color: Colors.white)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
       body: SafeArea(
         child: Column(

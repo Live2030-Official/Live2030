@@ -1,7 +1,20 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query, Request } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  Request,
+  UseGuards,
+} from '@nestjs/common';
 import { UsersService } from './users.service';
 import { UpdateUserStatusDto, AdjustWalletDto, UpdateProfileDto, CreateReportDto, ReportActionDto, SetVerificationDto, AdminSetCustomIdDto } from './dto/user.dto';
 import { RequirePermissions } from '../auth/permissions.decorator';
+import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 
 @Controller('api')
 export class UsersController {
@@ -36,13 +49,9 @@ export class UsersController {
   }
 
   @Delete('users/account')
-  async deleteMyAccount(
-    @Request() req: any,
-    @Body('userId') bodyUserId?: string,
-    @Query('userId') queryUserId?: string,
-  ) {
-    const targetUserId = req.user?.id || bodyUserId || queryUserId;
-    return this.usersService.deleteAccount(targetUserId);
+  @UseGuards(UserAuthGuard)
+  async deleteMyAccount(@Request() req: any) {
+    return this.usersService.deleteAccount(req.user.id);
   }
 
   @Delete('users/:id')
@@ -58,13 +67,19 @@ export class UsersController {
   }
 
   @Get('users/:id/earnings-report')
-  async getUserEarningsReport(@Param('id') id: string) {
+  @UseGuards(UserAuthGuard)
+  async getUserEarningsReport(@Param('id') id: string, @Request() req: any) {
+    const isStaff = req.user?.isStaff === true || ['SUPER_ADMIN', 'AGENCY_ADMIN'].includes(req.user?.role);
+    if (!isStaff && id !== req.user?.id) {
+      throw new ForbiddenException('You can only view your own earnings report.');
+    }
     return this.usersService.getUserEarningsReport(id);
   }
 
   @Get('users/:id')
-  async getUserById(@Param('id') id: string) {
-    return this.usersService.getUserById(id);
+  @UseGuards(UserAuthGuard)
+  async getUserById(@Param('id') id: string, @Request() req: any) {
+    return this.usersService.getUserById(id, req.user);
   }
 
   @Put('users/admin/:id/status')
@@ -92,19 +107,18 @@ export class UsersController {
   }
 
   @Put('users/profile')
+  @UseGuards(UserAuthGuard)
   async updateUserProfile(
     @Request() req: any,
     @Body() dto: UpdateProfileDto,
-    @Query('userId') queryUserId?: string,
   ) {
-    const userId = req.user?.id || (dto as any).userId || queryUserId || 'host-me';
-    return this.usersService.updateUserProfile(userId, dto);
+    return this.usersService.updateUserProfile(req.user.id, dto);
   }
 
   @Post('reports/create')
+  @UseGuards(UserAuthGuard)
   async createReport(@Request() req: any, @Body() dto: CreateReportDto) {
-    const reporterId = req.user?.id || (dto as any).reporterId || 'user-01';
-    return this.usersService.createReport(reporterId, dto);
+    return this.usersService.createReport(req.user.id, dto);
   }
 
   @Get('reports/admin/list')

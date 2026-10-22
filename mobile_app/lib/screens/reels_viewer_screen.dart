@@ -100,6 +100,23 @@ class _ReelsViewerScreenState extends State<ReelsViewerScreen> {
     }
   }
 
+  Future<void> _openComments(Map<String, dynamic> post) async {
+    final postId = post['id']?.toString() ?? '';
+    if (postId.isEmpty) return;
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ReelCommentsSheet(
+        postId: postId,
+        onCommentAdded: () {
+          post['commentsCount'] = (post['commentsCount'] as int? ?? 0) + 1;
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.reels.isEmpty) {
@@ -129,6 +146,7 @@ class _ReelsViewerScreenState extends State<ReelsViewerScreen> {
                 onFollow: () => _toggleFollow(post),
                 onShare: () => _share(post),
                 onToggleMute: () => setState(() => _muted = !_muted),
+                onComment: () => _openComments(post),
               );
             },
           ),
@@ -177,6 +195,7 @@ class _ReelPage extends StatelessWidget {
   final VoidCallback onFollow;
   final VoidCallback onShare;
   final VoidCallback onToggleMute;
+  final VoidCallback onComment;
 
   const _ReelPage({
     required this.post,
@@ -186,6 +205,7 @@ class _ReelPage extends StatelessWidget {
     required this.onFollow,
     required this.onShare,
     required this.onToggleMute,
+    required this.onComment,
   });
 
   @override
@@ -219,6 +239,7 @@ class _ReelPage extends StatelessWidget {
               aspectRatio: 9 / 16,
               autoPlay: true,
               looping: true,
+              muted: muted,
             )
           else if (thumbnailUrl != null && thumbnailUrl.isNotEmpty)
             CachedNetworkImage(
@@ -335,7 +356,7 @@ class _ReelPage extends StatelessWidget {
                   icon: Icons.mode_comment_outlined,
                   color: Colors.white,
                   label: _formatCount(commentsCount),
-                  onTap: () {},
+                  onTap: onComment,
                 ),
                 const SizedBox(height: 18),
                 _ReelAction(
@@ -397,6 +418,254 @@ class _ReelAction extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+
+/// Bottom-sheet comment thread for a Reel. Reuses the social comment API.
+class _ReelCommentsSheet extends StatefulWidget {
+  final String postId;
+  final VoidCallback onCommentAdded;
+
+  const _ReelCommentsSheet({
+    required this.postId,
+    required this.onCommentAdded,
+  });
+
+  @override
+  State<_ReelCommentsSheet> createState() => _ReelCommentsSheetState();
+}
+
+class _ReelCommentsSheetState extends State<_ReelCommentsSheet> {
+  final TextEditingController _controller = TextEditingController();
+  bool _isLoading = true;
+  bool _isSending = false;
+  List<Map<String, dynamic>> _comments = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final rows = await ApiService().getPostComments(widget.postId);
+    if (!mounted) return;
+    setState(() {
+      _comments = rows;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _send() async {
+    final text = _controller.text.trim();
+    final user = AuthService().currentUser;
+    if (text.isEmpty || user == null || _isSending) return;
+    setState(() => _isSending = true);
+    try {
+      final created = await ApiService().addPostComment(
+        widget.postId,
+        authorId: user.id,
+        content: text,
+      );
+      if (!mounted) return;
+      _controller.clear();
+      setState(() {
+        if (created != null) {
+          _comments.add({
+            ...created,
+            'author': created['author'] ??
+                {
+                  'id': user.id,
+                  'displayName': user.displayName,
+                  'username': user.username,
+                  'avatarUrl': user.avatarUrl,
+                },
+          });
+        }
+        _isSending = false;
+      });
+      widget.onCommentAdded();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isSending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Colors.redAccent,
+          content: Text('Could not post your comment. Please try again.'),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: Container(
+        height: MediaQuery.of(context).size.height * 0.62,
+        decoration: const BoxDecoration(
+          color: LiveColors.backgroundSurface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(top: 10, bottom: 8),
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.mode_comment_outlined, color: Colors.white70, size: 18),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Comments',
+                    style: GoogleFonts.plusJakartaSans(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.white12, height: 20),
+            Expanded(
+              child: _isLoading
+                  ? const Center(
+                      child: CircularProgressIndicator(color: LiveColors.accentPink),
+                    )
+                  : _comments.isEmpty
+                      ? const Center(
+                          child: Text(
+                            'Be the first to comment.',
+                            style: TextStyle(color: Colors.white54, fontSize: 13),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          itemCount: _comments.length,
+                          itemBuilder: (context, index) {
+                            final c = _comments[index];
+                            final author = c['author'] as Map<String, dynamic>?;
+                            final name = author?['displayName']?.toString() ??
+                                author?['username']?.toString() ??
+                                'User';
+                            final avatar = author?['avatarUrl']?.toString();
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  CircleAvatar(
+                                    radius: 16,
+                                    backgroundColor: LiveColors.accentPurple,
+                                    backgroundImage: (avatar != null && avatar.isNotEmpty)
+                                        ? NetworkImage(avatar)
+                                        : null,
+                                    child: (avatar == null || avatar.isEmpty)
+                                        ? Text(
+                                            name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          )
+                                        : null,
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          name,
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          c['content']?.toString() ?? '',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 13,
+                                            height: 1.3,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+            ),
+            SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _controller,
+                        textInputAction: TextInputAction.send,
+                        onSubmitted: (_) => _send(),
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        decoration: InputDecoration(
+                          hintText: 'Add a comment...',
+                          hintStyle: const TextStyle(color: Colors.white38),
+                          filled: true,
+                          fillColor: LiveColors.backgroundInput,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(20),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      onPressed: _isSending ? null : _send,
+                      icon: _isSending
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.send_rounded, color: LiveColors.accentPink),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

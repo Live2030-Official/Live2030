@@ -17,6 +17,7 @@ class AppVideoPlayer extends StatefulWidget {
   final double? aspectRatio;
   final bool autoPlay;
   final bool looping;
+  final bool muted;
 
   const AppVideoPlayer({
     super.key,
@@ -25,6 +26,7 @@ class AppVideoPlayer extends StatefulWidget {
     this.aspectRatio,
     this.autoPlay = false,
     this.looping = true,
+    this.muted = false,
   });
 
   @override
@@ -58,6 +60,9 @@ class _AppVideoPlayerState extends State<AppVideoPlayer> {
       _isInitialized = false;
       _hasError = false;
       _initializeVideo();
+    } else if (oldWidget.muted != widget.muted && _controller != null) {
+      setState(() => _isMuted = widget.muted);
+      _controller!.setVolume(widget.muted ? 0.0 : 1.0);
     }
   }
 
@@ -75,6 +80,8 @@ class _AppVideoPlayerState extends State<AppVideoPlayer> {
       _controller = VideoPlayerController.networkUrl(uri);
       await _controller!.initialize();
       _controller!.setLooping(widget.looping);
+      _isMuted = widget.muted;
+      _controller!.setVolume(_isMuted ? 0.0 : 1.0);
       _controller!.addListener(_onControllerUpdate);
 
       if (mounted) {

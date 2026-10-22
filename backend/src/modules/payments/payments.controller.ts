@@ -10,10 +10,12 @@ import {
   Res,
   HttpCode,
   HttpStatus,
+  NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { CreateOrderDto, RsomPayWebhookDto } from './dto/payment.dto';
-import { RequirePermissions } from '../auth/permissions.decorator';
+import { RequirePermissions, Public } from '../auth/permissions.decorator';
 import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 import { UseGuards } from '@nestjs/common';
 import type { Response, Request } from 'express';
@@ -25,6 +27,7 @@ export class PaymentsController {
   /**
    * 1. Get available Coin Top-Up Packages & Pricing (SAR)
    */
+  @Public()
   @Get('packages')
   getCoinPackages() {
     return this.paymentsService.getCoinPackages();
@@ -34,6 +37,7 @@ export class PaymentsController {
    * Test Connection to Official RsomPay Gateway
    */
   @Get('rsompay/test-connection')
+  @RequirePermissions('financial.view')
   async testConnection() {
     return this.paymentsService.testGatewayConnection();
   }
@@ -53,13 +57,20 @@ export class PaymentsController {
    * 3. Verify Payment Status & Auto-Credit Coins
    */
   @Get('rsompay/status/:orderId')
-  async verifyPaymentStatus(@Param('orderId') orderId: string) {
+  @UseGuards(UserAuthGuard)
+  async verifyPaymentStatus(@Req() req: any, @Param('orderId') orderId: string) {
+    const order = await this.paymentsService.getOrderByReference(orderId);
+    const isStaff = req.user?.isStaff === true || ['SUPER_ADMIN', 'AGENCY_ADMIN'].includes(req.user?.role);
+    if (!isStaff && order && order.userId && order.userId !== req.user?.id) {
+      throw new ForbiddenException('You can only check your own payment orders.');
+    }
     return this.paymentsService.verifyPaymentStatus(orderId);
   }
 
   /**
    * 4. Outbound Webhook Receiver from RsomPay
    */
+  @Public()
   @Post('rsompay/webhook')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(
@@ -82,6 +93,15 @@ export class PaymentsController {
   }
 
   /**
+   * 5a. Wallet/coin transaction history for the signed-in user
+   */
+  @Get('transactions')
+  @UseGuards(UserAuthGuard)
+  async getMyTransactions(@Req() req: any, @Query('limit') limit?: string) {
+    return this.paymentsService.getUserTransactions(req.user.id, Number(limit) || 100);
+  }
+
+  /**
    * 5b. Admin: recent payment orders + revenue summary
    */
   @Get('admin/orders')
@@ -93,6 +113,7 @@ export class PaymentsController {
   /**
    * 6. RsomPay Return Page (Browser UX redirect after customer checkout)
    */
+  @Public()
   @Get('rsompay/return')
   async paymentReturnPage(
     @Query('status') status: string,
@@ -256,6 +277,7 @@ export class PaymentsController {
    * 6b. Sandbox payment simulator confirm handler.
    * Marks the order as paid (simulator mode only) and redirects to the return page.
    */
+  @Public()
   @Get('rsompay/simulate')
   async simulatePayment(
     @Query('orderId') orderId: string,
@@ -263,6 +285,9 @@ export class PaymentsController {
     @Query('currency_code') currencyCode: string,
     @Res() res: Response,
   ) {
+    if (!this.paymentsService.isSimulatorMode()) {
+      throw new NotFoundException();
+    }
     try {
       await this.paymentsService.markSimulatorPaid(orderId);
     } catch (e) {
@@ -281,8 +306,12 @@ export class PaymentsController {
    * 7. Interactive RsomPay Sandbox Checkout Simulator
    * Allows testing without live credentials or offline testing.
    */
+  @Public()
   @Get('rsompay/mock-checkout')
   async mockCheckout(@Query('orderId') orderId: string, @Res() res: Response) {
+    if (!this.paymentsService.isSimulatorMode()) {
+      throw new NotFoundException();
+    }
     const order = await this.paymentsService.getOrderByReference(orderId);
     const amount = order?.amountSAR || 10;
     const coins = order?.coins || 500;
