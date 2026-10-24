@@ -103,8 +103,8 @@ function Push-WorkspaceSync {
     Pop-Location
 
     # Upload tar and extract on AWS
-    scp -i "$KEY" -o StrictHostKeyChecking=no "$tarFile" "$USER@${IP}:/tmp/live2030_sync.tar.gz"
-    ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$IP" "mkdir -p $REMOTE && tar -xzf /tmp/live2030_sync.tar.gz -C $REMOTE && rm -f /tmp/live2030_sync.tar.gz"
+    scp -i "$KEY" -o StrictHostKeyChecking=no -o BatchMode=yes "$tarFile" "$USER@${IP}:/tmp/live2030_sync.tar.gz"
+    ssh -n -i "$KEY" -o StrictHostKeyChecking=no -o BatchMode=yes "$USER@$IP" "mkdir -p $REMOTE && tar -xzf /tmp/live2030_sync.tar.gz -C $REMOTE && rm -f /tmp/live2030_sync.tar.gz"
     Remove-Item $tarFile -Force
 
     $duration = ((Get-Date) - $startTime).TotalSeconds
@@ -112,7 +112,7 @@ function Push-WorkspaceSync {
 
     if ($Build) {
         Write-Host "Building and restarting containers on AWS..." -ForegroundColor Yellow
-        ssh -i "$KEY" -o StrictHostKeyChecking=no "$USER@$IP" "cd $REMOTE && sudo docker compose up -d --build"
+        ssh -n -i "$KEY" -o StrictHostKeyChecking=no -o BatchMode=yes "$USER@$IP" "cd $REMOTE && sudo docker compose up -d --build"
         Write-Host "Containers updated and running live!" -ForegroundColor Green
     }
 }

@@ -31,7 +31,9 @@ class _ReelsViewerScreenState extends State<ReelsViewerScreen> {
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialIndex.clamp(0, widget.reels.length - 1);
+    _currentIndex = widget.reels.isEmpty
+        ? 0
+        : widget.initialIndex.clamp(0, widget.reels.length - 1);
     _pageController = PageController(initialPage: _currentIndex);
   }
 
